@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.idea/
+.DS_Store
+.python-version
+
+dist/
+*.build/
+
+models/
