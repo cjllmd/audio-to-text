@@ -40,6 +40,7 @@ _WARNING = "#fdcb6e"
 _DANGER = "#e17055"
 _DROP_BG = "#f0f3ff"
 _DROP_BORDER = "#4a6cf7"
+_DROP_HOVER = "#e8ecff"
 _LANG_MAP = {"自动识别": "auto", "中文": "zh", "英文": "en", "日文": "ja", "韩文": "ko", "粤语": "yue"}
 _LANG_DISPLAY = list(_LANG_MAP.keys())
 _SHADOW = "#e0e3eb"
@@ -111,9 +112,9 @@ class _ProgressIndicator(tk.Canvas):
         self._bar_w = 80
         self.bind("<Configure>", self._draw)
 
-    def start(self, interval=30):
+    def start(self):
         self._running = True
-        self._tick()
+        self.after(10, self._tick)
 
     def stop(self):
         self._running = False
@@ -122,9 +123,9 @@ class _ProgressIndicator(tk.Canvas):
     def _tick(self):
         if not self._running:
             return
-        self._pos = (self._pos + 3) % (self.winfo_width() + self._bar_w)
+        self._pos = (self._pos + 4) % (self.winfo_width() + self._bar_w)
         self._draw()
-        self.after(30, self._tick)
+        self.after(20, self._tick)
 
     def _draw(self, event=None):
         self.delete("all")
@@ -338,7 +339,7 @@ class App(_BASE_CLASS):
 
         tk.Label(bar, text="语言", bg=_CARD, fg=_TEXT_SEC,
                  font=("PingFang SC", 9)).pack(side="left", padx=(0, 4))
-        self.lang_var = tk.StringVar(value="自动识别")
+        self.lang_var = tk.StringVar(value="中文")
         self.lang_combo = ttk.Combobox(
             bar, textvariable=self.lang_var,
             values=_LANG_DISPLAY,
@@ -356,7 +357,7 @@ class App(_BASE_CLASS):
         )
         self._diarize_cb.pack(side="left", padx=(0, 8))
 
-        self.num_speakers_var = tk.StringVar(value="自动")
+        self.num_speakers_var = tk.StringVar(value="2")
         tk.Label(bar, text="人数", bg=_CARD, fg=_TEXT_SEC,
                  font=("PingFang SC", 9)).pack(side="left", padx=(0, 4))
         self.num_speakers_combo = ttk.Combobox(
@@ -426,10 +427,17 @@ class App(_BASE_CLASS):
     def _on_dnd_leave(self, event):
         self._on_drop_leave()
 
+    def _validate_audio(self, path: str) -> bool:
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in (".wav", ".mp3", ".m4a"):
+            messagebox.showwarning("格式不支持", f"不支持 {ext or '此格式'} 文件\n仅支持 WAV / MP3 / M4A 格式")
+            return False
+        return True
+
     def _on_drop(self, event):
         self._on_drop_leave()
         path = event.data.strip().strip('"').strip("'")
-        if path:
+        if path and self._validate_audio(path):
             self.file_var.set(path)
 
     def _on_file_var_change(self, *args):
@@ -512,7 +520,7 @@ class App(_BASE_CLASS):
                 ("所有文件", "*.*"),
             ],
         )
-        if path:
+        if path and self._validate_audio(path):
             self.file_var.set(path)
 
     def _set_ui_busy(self, busy):
@@ -521,6 +529,7 @@ class App(_BASE_CLASS):
         if busy:
             self.progress.start()
             self._status_label.config(text="识别中...", foreground=_ACCENT)
+            self.update_idletasks()
         else:
             self.progress.stop()
             self._status_label.config(text="")
@@ -538,7 +547,7 @@ class App(_BASE_CLASS):
                     self.result_text.see("end")
         except queue.Empty:
             pass
-        self.after(100, self._poll_queue)
+        self.after(50, self._poll_queue)
 
     def _run(self):
         if not self._check_license():
