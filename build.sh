@@ -39,6 +39,7 @@ build_mac() {
         --standalone \
         --enable-plugin=tk-inter \
         --nofollow-import-to=tkinterdnd2 \
+        --include-module=av \
         --include-data-dir=models=models \
         --output-dir="${OUTPUT_DIR}" \
         --output-filename="${APP_NAME}" \
@@ -81,6 +82,7 @@ build_windows() {
         --standalone \
         --enable-plugin=tk-inter \
         --nofollow-import-to=tkinterdnd2 \
+        --include-module=av \
         --include-data-dir=models=models \
         --output-dir="${OUTPUT_DIR}" \
         --output-filename="${APP_NAME}.exe" \

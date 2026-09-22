@@ -283,15 +283,45 @@ def transcribe_file(
     return "".join(results)
 
 
+def _convert_via_av(input_path: str, wav_path: str) -> str:
+    import av
+    inp = av.open(input_path)
+    stream = next(s for s in inp.streams if s.type == "audio")
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+    chunks = []
+    for frame in inp.decode(stream):
+        for r in resampler.resample(frame):
+            chunks.append(r.to_ndarray())
+    for r in resampler.resample(None):
+        chunks.append(r.to_ndarray())
+    inp.close()
+    if not chunks:
+        raise RuntimeError("PyAV 解码无音频数据")
+    audio = np.concatenate(chunks).flatten().astype(np.int16)
+    import soundfile as sf
+    sf.write(wav_path, audio, 16000, subtype="PCM_16")
+    return wav_path
+
+
 def convert_to_wav(input_path: str) -> str:
     if input_path.lower().endswith(".wav"):
         return input_path
     wav_path = os.path.splitext(input_path)[0] + "_temp.wav"
     try:
+        return _convert_via_av(input_path, wav_path)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    try:
         subprocess.run(
             [
-                "ffmpeg", "-y", "-i", input_path,
-                "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
+                "ffmpeg", "-hide_banner", "-nostdin", "-threads", "0",
+                "-y", "-i", input_path,
+                "-vn", "-map_metadata", "-1",
+                "-ar", "16000", "-ac", "1",
+                "-acodec", "pcm_s16le",
+                "-fflags", "+fastseek",
                 wav_path,
             ],
             capture_output=True, check=True, timeout=120,
@@ -304,17 +334,25 @@ def convert_to_wav(input_path: str) -> str:
     try:
         import soundfile as sf
     except ImportError:
-        raise ImportError("非 WAV 格式需要 ffmpeg 或 soundfile，请安装其一")
-    data, sr = sf.read(input_path, dtype="int16")
+        raise ImportError("非 WAV 格式需要 av、ffmpeg 或 soundfile，请安装其一")
+    data, sr = sf.read(input_path, dtype="float32")
     if data.ndim > 1:
         data = data[:, 0]
     if sr != 16000:
-        ratio = 16000 / sr
-        num_samples = int(len(data) * ratio)
-        indices = np.linspace(0, len(data) - 1, num_samples).astype(np.int64)
-        data = data[indices]
+        try:
+            from scipy.signal import resample_poly
+            gcd = np.gcd(16000, sr)
+            up = 16000 // gcd
+            down = sr // gcd
+            data = resample_poly(data, up, down).astype(np.float32)
+        except ImportError:
+            ratio = 16000 / sr
+            num_samples = int(len(data) * ratio)
+            indices = np.linspace(0, len(data) - 1, num_samples).astype(np.int64)
+            data = data[indices]
         sr = 16000
-    sf.write(wav_path, data, sr, subtype="PCM_16")
+    data_int16 = np.clip(data * 32767, -32768, 32767).astype(np.int16)
+    sf.write(wav_path, data_int16, sr, subtype="PCM_16")
     return wav_path
 
 
