@@ -4,7 +4,7 @@ __pycache__/
 .idea/
 .DS_Store
 .python-version
-
+tools/keys/
 dist/
 *.build/
 
