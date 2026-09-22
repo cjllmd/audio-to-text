@@ -40,7 +40,8 @@ _WARNING = "#fdcb6e"
 _DANGER = "#e17055"
 _DROP_BG = "#f0f3ff"
 _DROP_BORDER = "#4a6cf7"
-_DROP_HOVER = "#e8ecff"
+_LANG_MAP = {"自动识别": "auto", "中文": "zh", "英文": "en", "日文": "ja", "韩文": "ko", "粤语": "yue"}
+_LANG_DISPLAY = list(_LANG_MAP.keys())
 _SHADOW = "#e0e3eb"
 
 
@@ -337,10 +338,10 @@ class App(_BASE_CLASS):
 
         tk.Label(bar, text="语言", bg=_CARD, fg=_TEXT_SEC,
                  font=("PingFang SC", 9)).pack(side="left", padx=(0, 4))
-        self.lang_var = tk.StringVar(value="auto")
+        self.lang_var = tk.StringVar(value="自动识别")
         self.lang_combo = ttk.Combobox(
             bar, textvariable=self.lang_var,
-            values=["auto", "zh", "en", "ja", "ko", "yue"],
+            values=_LANG_DISPLAY,
             state="readonly", width=8,
         )
         self.lang_combo.pack(side="left", padx=(0, 24))
@@ -551,7 +552,7 @@ class App(_BASE_CLASS):
             return
 
         model = "sensevoice"
-        language = self.lang_var.get()
+        language = _LANG_MAP.get(self.lang_var.get(), "auto")
         use_vad = False
         use_diarize = self.diarize_var.get()
         num_speakers_str = self.num_speakers_var.get()
