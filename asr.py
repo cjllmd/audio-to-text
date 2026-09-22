@@ -6,6 +6,17 @@ import numpy as np
 import sherpa_onnx
 import hashlib
 import struct as _struct
+from concurrent.futures import ThreadPoolExecutor
+
+_RECOGNIZER_CACHE: dict[str, object] = {}
+
+
+def _default_threads() -> int:
+    return min(os.cpu_count() or 4, 8)
+
+
+def _cache_key(model: str, language: str, num_threads: int) -> str:
+    return f"{model}|{language}|{num_threads}"
 
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
@@ -164,11 +175,13 @@ def transcribe_with_diarization(
     audio_path: str,
     model: str = "paraformer-small",
     language: str = "auto",
-    num_threads: int = 4,
+    num_threads: int = 0,
     num_clusters: int = -1,
     clustering_threshold: float = 0.5,
 ) -> str:
     _verify_core_auth()
+    if num_threads <= 0:
+        num_threads = _default_threads()
     samples, sample_rate = read_wave(audio_path)
     samples, sample_rate = resample_if_needed(samples, sample_rate, 16000)
 
@@ -189,7 +202,7 @@ def transcribe_with_diarization(
     speaker_map = {}
     next_id = 1
 
-    speaker_lines = []
+    decode_tasks = []
     for seg in segments:
         raw_speaker = seg.speaker
         if raw_speaker not in speaker_map:
@@ -206,26 +219,48 @@ def transcribe_with_diarization(
             continue
 
         segment_samples = samples[start_sample:end_sample]
+        decode_tasks.append((speaker_id, seg.start, seg.end, segment_samples))
 
-        stream = recognizer.create_stream()
-        stream.accept_waveform(sample_rate, segment_samples)
-        recognizer.decode_stream(stream)
-        text = stream.result.text.strip()
+    def _decode_task(task):
+        sid, start, end, seg_samples = task
+        text = _decode_segment(recognizer, sample_rate, seg_samples)
+        return sid, start, end, text
 
+    if len(decode_tasks) <= 1:
+        decoded = [_decode_task(t) for t in decode_tasks]
+    else:
+        decode_workers = max(1, min(num_threads, len(decode_tasks)))
+        with ThreadPoolExecutor(max_workers=decode_workers) as pool:
+            decoded = list(pool.map(_decode_task, decode_tasks))
+
+    speaker_lines = []
+    for sid, start, end, text in decoded:
         if text:
-            time_str = f"[{seg.start:.1f}s - {seg.end:.1f}s]"
-            speaker_lines.append(f"说话人{speaker_id} {time_str}: {text}")
+            time_str = f"[{start:.1f}s - {end:.1f}s]"
+            speaker_lines.append(f"说话人{sid} {time_str}: {text}")
 
     return "\n".join(speaker_lines)
 
 
 def create_recognizer(model: str, language: str = "auto", num_threads: int = 4):
+    key = _cache_key(model, language, num_threads)
+    if key in _RECOGNIZER_CACHE:
+        return _RECOGNIZER_CACHE[key]
     if model == "paraformer-small":
-        return create_paraformer_small_recognizer(num_threads=num_threads)
+        rec = create_paraformer_small_recognizer(num_threads=num_threads)
     elif model == "sensevoice":
-        return create_sense_voice_recognizer(language=language, num_threads=num_threads)
+        rec = create_sense_voice_recognizer(language=language, num_threads=num_threads)
     else:
         raise ValueError(f"不支持的模型: {model}，可选: {', '.join(MODEL_INFO.keys())}")
+    _RECOGNIZER_CACHE[key] = rec
+    return rec
+
+
+def _decode_segment(recognizer, sample_rate: int, segment: np.ndarray) -> str:
+    stream = recognizer.create_stream()
+    stream.accept_waveform(sample_rate, segment)
+    recognizer.decode_stream(stream)
+    return stream.result.text.strip()
 
 
 def transcribe_file(
@@ -233,9 +268,11 @@ def transcribe_file(
     model: str = "paraformer-small",
     language: str = "auto",
     use_vad: bool = True,
-    num_threads: int = 4,
+    num_threads: int = 0,
 ) -> str:
     _verify_core_auth()
+    if num_threads <= 0:
+        num_threads = _default_threads()
     recognizer = create_recognizer(model, language, num_threads)
 
     samples, sample_rate = read_wave(audio_path)
@@ -248,39 +285,46 @@ def transcribe_file(
         return stream.result.text
 
     vad = create_vad()
-    results = []
 
     window_size = vad.window_size()
     speech_segments = []
-    current_segment = []
+    current_chunks = []
 
     offset = 0
-    while offset < len(samples):
-        end = min(offset + window_size, len(samples))
+    n = len(samples)
+    while offset < n:
+        end = min(offset + window_size, n)
         chunk = samples[offset:end]
         if len(chunk) < window_size:
             chunk = np.pad(chunk, (0, window_size - len(chunk)))
         is_speech = vad.is_speech(chunk.tolist())
         if is_speech:
-            current_segment.extend(samples[offset:end].tolist())
+            current_chunks.append(samples[offset:end])
         else:
-            if current_segment:
-                speech_segments.append(np.array(current_segment, dtype=np.float32))
-                current_segment = []
+            if current_chunks:
+                speech_segments.append(np.concatenate(current_chunks).astype(np.float32))
+                current_chunks = []
         offset = end
 
-    if current_segment:
-        speech_segments.append(np.array(current_segment, dtype=np.float32))
+    if current_chunks:
+        speech_segments.append(np.concatenate(current_chunks).astype(np.float32))
 
-    for segment in speech_segments:
-        stream = recognizer.create_stream()
-        stream.accept_waveform(sample_rate, segment)
-        recognizer.decode_stream(stream)
-        text = stream.result.text.strip()
-        if text:
-            results.append(text)
+    if not speech_segments:
+        return ""
 
-    return "".join(results)
+    if len(speech_segments) == 1:
+        text = _decode_segment(recognizer, sample_rate, speech_segments[0])
+        return text
+
+    decode_workers = max(1, min(num_threads, len(speech_segments)))
+    with ThreadPoolExecutor(max_workers=decode_workers) as pool:
+        futures = [
+            pool.submit(_decode_segment, recognizer, sample_rate, seg)
+            for seg in speech_segments
+        ]
+        results = [f.result() for f in futures]
+
+    return "".join(t for t in results if t)
 
 
 def _convert_via_av(input_path: str, wav_path: str) -> str:
@@ -372,7 +416,10 @@ def main():
         help="语言 (仅 SenseVoice 支持, 默认: auto 自动检测)",
     )
     parser.add_argument("--no-vad", action="store_true", help="禁用 VAD 语音活动检测")
-    parser.add_argument("--threads", type=int, default=4, help="推理线程数 (默认: 4)")
+    parser.add_argument("--threads", type=int, default=0, help="推理线程数 (0=自动, 默认: 0)")
+    parser.add_argument("--json-output", action="store_true", help="JSON 格式输出（供 GUI 调用）")
+    parser.add_argument("--diarize", action="store_true", help="区分说话人")
+    parser.add_argument("--num-speakers", type=int, default=-1, help="说话人数量（-1 为自动）")
     parser.add_argument(
         "--interactive", action="store_true", help="交互模式，连续输入文件路径识别"
     )
@@ -437,19 +484,40 @@ def main():
         wav_path = convert_to_wav(args.audio)
         if wav_path != args.audio:
             temp_wav = wav_path
-            print(f"已将 {os.path.splitext(args.audio)[1]} 转换为 WAV 格式")
+            if not args.json_output:
+                print(f"已将 {os.path.splitext(args.audio)[1]} 转换为 WAV 格式")
 
-        print(f"模型: {args.model} ({MODEL_INFO[args.model]['desc']}) | VAD: {'关' if args.no_vad else '开'}")
-        text = transcribe_file(
-            wav_path,
-            model=args.model,
-            language=args.language,
-            use_vad=not args.no_vad,
-            num_threads=args.threads,
-        )
-        print(f"\n识别结果:\n{text}")
+        if not args.json_output:
+            print(f"模型: {args.model} ({MODEL_INFO[args.model]['desc']}) | VAD: {'关' if args.no_vad else '开'}")
+
+        if args.diarize:
+            text = transcribe_with_diarization(
+                wav_path,
+                model=args.model,
+                language=args.language,
+                num_threads=args.threads,
+                num_clusters=args.num_speakers,
+            )
+        else:
+            text = transcribe_file(
+                wav_path,
+                model=args.model,
+                language=args.language,
+                use_vad=not args.no_vad,
+                num_threads=args.threads,
+            )
+
+        if args.json_output:
+            import json
+            print(json.dumps({"ok": True, "text": text}, ensure_ascii=False))
+        else:
+            print(f"\n识别结果:\n{text}")
     except Exception as e:
-        print(f"识别失败: {e}")
+        if args.json_output:
+            import json
+            print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+        else:
+            print(f"识别失败: {e}")
     finally:
         if temp_wav and os.path.exists(temp_wav):
             os.remove(temp_wav)

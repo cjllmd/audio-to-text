@@ -1,6 +1,9 @@
+import json
 import os
-import queue
-import threading
+import select
+import subprocess
+import sys
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -10,7 +13,6 @@ try:
 except ImportError:
     _HAS_DND = False
 
-import asr
 from license import (
     TRIAL_MAX,
     check_auth,
@@ -103,41 +105,49 @@ class _Style:
 
 
 class _ProgressIndicator(tk.Canvas):
-    """自绘进度条：圆角细线 + 脉冲动画。"""
+    """自绘进度条：纯 Tcl 动画，不依赖 Python GIL，推理时不会卡死。"""
+
+    _counter = 0
 
     def __init__(self, master, **kw):
         super().__init__(master, height=3, bg=_BG, highlightthickness=0, **kw)
-        self._pos = 0
-        self._running = False
-        self._bar_w = 80
-        self.bind("<Configure>", self._draw)
+        _ProgressIndicator._counter += 1
+        self._n = f"pp{_ProgressIndicator._counter}"
 
     def start(self):
-        self._running = True
-        self.after(10, self._tick)
+        c = self._w
+        n = self._n
+        bg = _BORDER
+        fg = _ACCENT
+        code = (
+            "set ::" + n + "_pos 0\n"
+            "proc ::" + n + "_tick {} {\n"
+            "  global " + n + "_pos " + n + "_aid\n"
+            "  set w [winfo width " + c + "]\n"
+            "  if {$w < 2} {set w 200}\n"
+            "  set " + n + "_pos [expr {$" + n + "_pos + 4}]\n"
+            "  if {$" + n + "_pos > $w + 80} {set " + n + "_pos 0}\n"
+            "  " + c + " delete all\n"
+            "  " + c + ' create rectangle 0 0 $w 3 -fill "' + bg + '" -outline ""\n'
+            "  set x1 [expr {max(0, $" + n + "_pos - 80)}]\n"
+            "  set x2 [expr {min($w, $" + n + "_pos)}]\n"
+            "  if {$x2 > $x1} {\n"
+            "    " + c + ' create rectangle $x1 0 $x2 3 -fill "' + fg + '" -outline ""\n'
+            "  }\n"
+            "  set " + n + "_aid [after 20 ::" + n + "_tick]\n"
+            "}\n"
+            "::" + n + "_tick"
+        )
+        self.tk.eval(code)
 
     def stop(self):
-        self._running = False
+        n = self._n
+        try:
+            self.tk.eval("catch {after cancel $" + n + "_aid}")
+            self.tk.eval("catch {rename ::" + n + "_tick {}}")
+        except Exception:
+            pass
         self.delete("all")
-
-    def _tick(self):
-        if not self._running:
-            return
-        self._pos = (self._pos + 4) % (self.winfo_width() + self._bar_w)
-        self._draw()
-        self.after(20, self._tick)
-
-    def _draw(self, event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        if w < 2:
-            return
-        self.create_rectangle(0, 0, w, 3, fill=_BORDER, outline="")
-        x = self._pos - self._bar_w
-        x1 = max(0, x)
-        x2 = min(w, x + self._bar_w)
-        if x2 > x1:
-            self.create_rectangle(x1, 0, x2, 3, fill=_ACCENT, outline="")
 
 
 class LicenseDialog(tk.Toplevel):
@@ -242,13 +252,15 @@ class App(_BASE_CLASS):
         self.title("音频转文字")
         self.configure(bg=_BG)
         self.resizable(False, False)
-        self._result_queue = queue.Queue()
+        self._proc = None
+        self._proc_stdout = b""
+        self._proc_stderr = b""
+        self._proc_start = 0.0
         _Style.apply(self)
         self._build_ui()
         if _HAS_DND:
             self._setup_dnd()
         self._center_window()
-        self._poll_queue()
 
     def _build_menu(self):
         menubar = tk.Menu(self, bg=_CARD, fg=_TEXT, activebackground=_ACCENT, activeforeground="#fff",
@@ -357,7 +369,7 @@ class App(_BASE_CLASS):
         )
         self._diarize_cb.pack(side="left", padx=(0, 8))
 
-        self.num_speakers_var = tk.StringVar(value="2")
+        self.num_speakers_var = tk.StringVar(value="自动")
         tk.Label(bar, text="人数", bg=_CARD, fg=_TEXT_SEC,
                  font=("PingFang SC", 9)).pack(side="left", padx=(0, 4))
         self.num_speakers_combo = ttk.Combobox(
@@ -368,6 +380,15 @@ class App(_BASE_CLASS):
         self.num_speakers_combo.pack(side="left")
         self.num_speakers_combo.config(state="disabled")
 
+        self.vad_var = tk.BooleanVar(value=False)
+        self._vad_cb = tk.Checkbutton(
+            bar, text="VAD 语音检测", variable=self.vad_var,
+            bg=_CARD, fg=_TEXT, selectcolor=_CARD,
+            activebackground=_CARD, activeforeground=_ACCENT,
+            font=("PingFang SC", 10), cursor="hand2",
+        )
+        self._vad_cb.pack(side="left", padx=(16, 0))
+
     def _build_actions(self):
         frame = ttk.Frame(self, padding=(16, 12))
         frame.pack(fill="x")
@@ -375,10 +396,17 @@ class App(_BASE_CLASS):
         self.run_btn = ttk.Button(frame, text="▶  开始识别", command=self._run)
         self.run_btn.pack(side="left")
 
+        self.cancel_btn = ttk.Button(frame, text="✕  取消", command=self._cancel, style="Outline.TButton")
+        self.cancel_btn.pack(side="left", padx=(8, 0))
+        self.cancel_btn.config(state="disabled")
+
         ttk.Button(frame, text="复制结果", command=self._copy_result, style="Outline.TButton").pack(side="left", padx=(8, 0))
 
         self._status_label = ttk.Label(frame, text="", style="Muted.TLabel", font=("PingFang SC", 9))
         self._status_label.pack(side="right")
+
+        self._elapsed_label = ttk.Label(frame, text="", style="Muted.TLabel", font=("PingFang SC", 9))
+        self._elapsed_label.pack(side="right", padx=(0, 12))
 
         self.progress = _ProgressIndicator(self)
         self.progress.pack(fill="x", padx=16)
@@ -525,29 +553,28 @@ class App(_BASE_CLASS):
 
     def _set_ui_busy(self, busy):
         state = "disabled" if busy else "normal"
+        cancel_state = "normal" if busy else "disabled"
         self.run_btn.config(state=state)
+        self.cancel_btn.config(state=cancel_state)
         if busy:
             self.progress.start()
             self._status_label.config(text="识别中...", foreground=_ACCENT)
-            self.update_idletasks()
+            self._elapsed_label.config(text="0.0s")
         else:
             self.progress.stop()
             self._status_label.config(text="")
 
-    def _poll_queue(self):
-        try:
-            while True:
-                msg_type, msg_data = self._result_queue.get_nowait()
-                if msg_type == "result":
-                    self._show_result(msg_data)
-                elif msg_type == "error":
-                    self._show_error(msg_data)
-                elif msg_type == "log":
-                    self.result_text.insert("end", msg_data + "\n")
-                    self.result_text.see("end")
-        except queue.Empty:
-            pass
-        self.after(50, self._poll_queue)
+    def _cancel(self):
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+            self._proc = None
+        self._set_ui_busy(False)
+        self._elapsed_label.config(text="")
+        self.result_text.delete("1.0", "end")
+        self.result_text.insert("end", "识别已取消")
 
     def _run(self):
         if not self._check_license():
@@ -562,7 +589,7 @@ class App(_BASE_CLASS):
 
         model = "sensevoice"
         language = _LANG_MAP.get(self.lang_var.get(), "auto")
-        use_vad = False
+        use_vad = self.vad_var.get()
         use_diarize = self.diarize_var.get()
         num_speakers_str = self.num_speakers_var.get()
 
@@ -570,60 +597,100 @@ class App(_BASE_CLASS):
         self.result_text.delete("1.0", "end")
         self.result_text.insert("end", "识别中...\n")
 
-        q = self._result_queue
+        asr_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr.py")
 
-        def worker():
-            temp_wav = None
+        cmd = [sys.executable, asr_script, audio_path,
+               "--model", model, "--language", language,
+               "--threads", "0", "--json-output"]
+        if not use_vad:
+            cmd.append("--no-vad")
+        if use_diarize:
+            cmd.append("--diarize")
+            if num_speakers_str != "自动":
+                cmd.extend(["--num-speakers", num_speakers_str])
+
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+            )
+        except Exception as e:
+            self._set_ui_busy(False)
+            self.result_text.delete("1.0", "end")
+            self.result_text.insert("end", f"启动识别进程失败:\n{e}")
+            return
+
+        self._proc_stdout = b""
+        self._proc_stderr = b""
+        self._proc_start = time.monotonic()
+        self._poll_proc()
+
+    def _poll_proc(self):
+        proc = self._proc
+        if proc is None:
+            return
+
+        retcode = proc.poll()
+
+        try:
+            readable, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0)
+            for fd in readable:
+                chunk = os.read(fd.fileno(), 65536)
+                if fd == proc.stdout:
+                    self._proc_stdout += chunk
+                else:
+                    self._proc_stderr += chunk
+        except (OSError, ValueError):
+            pass
+
+        if retcode is not None:
+            self._handle_proc_result()
+            return
+
+        elapsed = time.monotonic() - self._proc_start
+        self._elapsed_label.config(text=f"{elapsed:.1f}s")
+        if elapsed > 600:
             try:
-                q.put(("log", f"[调试] 开始处理: {audio_path}"))
-                q.put(("log", f"[调试] 模型: {model}, 语言: {language}, VAD: {use_vad}, 区分说话人: {use_diarize}"))
+                proc.kill()
+            except Exception:
+                pass
+            self._proc = None
+            self._show_error("识别超时（超过 10 分钟）")
+            return
 
-                q.put(("log", "[调试] 步骤1: 转换音频格式..."))
-                wav_path = asr.convert_to_wav(audio_path)
-                if wav_path != audio_path:
-                    temp_wav = wav_path
-                    q.put(("log", f"[调试] 已转换为WAV: {wav_path}"))
+        self.after(80, self._poll_proc)
+
+    def _handle_proc_result(self):
+        proc = self._proc
+        self._proc = None
+
+        try:
+            proc_stdout, proc_stderr = proc.communicate(timeout=5)
+            self._proc_stdout += proc_stdout
+            self._proc_stderr += proc_stderr
+        except Exception:
+            pass
+
+        output = self._proc_stdout.decode("utf-8", errors="replace").strip()
+        if output:
+            try:
+                data = json.loads(output)
+                if data.get("ok"):
+                    self._show_result(data.get("text", ""))
                 else:
-                    q.put(("log", "[调试] 已是WAV格式，无需转换"))
-
-                if use_diarize:
-                    q.put(("log", "[调试] 步骤2: 说话人区分 + 语音识别..."))
-                    num_clusters = -1
-                    if num_speakers_str != "自动":
-                        num_clusters = int(num_speakers_str)
-                    text = asr.transcribe_with_diarization(
-                        wav_path,
-                        model=model,
-                        language=language,
-                        num_threads=4,
-                        num_clusters=num_clusters,
-                    )
-                else:
-                    q.put(("log", "[调试] 步骤2: 加载模型并识别..."))
-                    text = asr.transcribe_file(
-                        wav_path,
-                        model=model,
-                        language=language,
-                        use_vad=use_vad,
-                        num_threads=4,
-                    )
-                q.put(("log", f"[调试] 识别完成，结果长度: {len(text)}"))
-
-                if temp_wav and os.path.exists(temp_wav):
-                    os.remove(temp_wav)
-                    q.put(("log", "[调试] 临时文件已清理"))
-
-                q.put(("result", text))
-            except Exception as e:
-                import traceback
-                tb = traceback.format_exc()
-                print(tb)
-                q.put(("error", f"{e}\n\n详细错误:\n{tb}"))
-
-        threading.Thread(target=worker, daemon=True).start()
+                    self._show_error(data.get("error", "未知错误"))
+            except json.JSONDecodeError:
+                self._show_error(output[:500])
+        else:
+            err = self._proc_stderr.decode("utf-8", errors="replace").strip()
+            self._show_error(err or "无输出")
 
     def _show_result(self, text):
         self._set_ui_busy(False)
+        elapsed = time.monotonic() - self._proc_start
+        self._elapsed_label.config(text=f"{elapsed:.1f}s")
         self.result_text.delete("1.0", "end")
         if text:
             self.result_text.insert("end", text)
@@ -632,6 +699,8 @@ class App(_BASE_CLASS):
 
     def _show_error(self, msg):
         self._set_ui_busy(False)
+        elapsed = time.monotonic() - self._proc_start
+        self._elapsed_label.config(text=f"{elapsed:.1f}s")
         self.result_text.delete("1.0", "end")
         self.result_text.insert("end", f"识别失败:\n{msg}")
 
