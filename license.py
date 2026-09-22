@@ -1,74 +1,110 @@
 """软件注册授权：机器码采集 + RSA 非对称签名授权（永久授权，无过期）。
 
-流程：
-  1. 采集硬件指纹计算机器码。
-  2. 卖方用私钥对「机器码」签名，得到注册码。
-  3. 软件内置公钥验签，校验机器码与当前机器匹配。
-
-公钥内嵌于本文件；私钥由卖方单独保存（tools/gen_license.py 生成）。
+安全增强：
+  - 公钥混淆存储（XOR 分段 + 双重完整性校验）
+  - 多点授权检查（GUI + 核心识别函数）
+  - 授权文件加密存储（Fernet + HMAC）
+  - 试用计数增强（基于机器码的不可预测 shadow 路径 + 时间戳防回拨）
+  - 机器码采集加固（格式校验 + 交叉验证）
+  - 反调试检测（环境变量 / API 检测）
 """
 from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
+import struct
 import subprocess
 import sys
+import time
+import zlib
 from pathlib import Path
 
 REG_FILE = Path.home() / ".asr_license.json"
-TRIAL_MAX = 5
+TRIAL_MAX = 10
 
+_PEM_E1 = "d3d3d3cYHx0TFHoKDxgWExl6ER8Dd3d3d3dQFxMTGBMwGxQYPTErMjEzHWMtahgbCx8cGxsVGRsLYhsXExMYGT0RGRsLHxsrAxcbFw48ACooHnU/Ag0sGRFjD1AAKjkXYywRYiosKxIwHjZpcSMNFQ5sEigDbRd1PghuHwsZKgB1DW4zMCxrOQ0xExV1MmkIdTM+MSI2"
+_PEM_E2 = "ytnoycTvqZXT6ufF6fTize7J9OjG+eDp0OH0xsGb0tTilJPyxtmM9pHR+fr509TJzujIk8L2yfHw6dfQjPuW99GR18GQ2/Wp5fXL7NDL0dDX1sTmkJTK5++X2cba8caayvCIx9Lb4YjJ0+D17cbn58/v24jZldrB9veMkuTP+8D679bi8e/z16nv8NDw95XqluSR4trH"
+_PEM_E3 = "gLb/v6qXiIm2s4D3lZOQlqP1tIPwirGwq6mXn4WBkp2kkL6A/qOVs7GCgfWAlI69qqGBza7xlY+VgqOWnrCzgYyJkqiFgqqRsbOziIiOno2Q9pa3vbGk8YaFgbekgf+ps6iztPOwtr6S9rWfvo2Liuyi9aDNv5aOg4aWhoXN6urq6uqCiYPnl5KFi46E54yCnurq6urq"
+_PEM_XK = (0x5A, 0xA3, 0xC7)
 
-def _trial_file() -> Path:
-    home = Path.home()
-    if sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA", home)) / "asr"
-    elif sys.platform == "darwin":
-        base = home / "Library" / "Application Support" / "asr"
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share")) / "asr"
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "trial.dat"
+_PK_HASH_XOR = [30, 66, 76, 76, 73, 76, 24, 66, 30, 31, 26, 79, 72, 73, 66, 31, 78, 73, 78, 30, 72, 31, 75, 31, 25, 29, 76, 79, 78, 74, 76, 25, 26, 29, 30, 79, 72, 24, 75, 73, 30, 26, 77, 76, 72, 25, 30, 67, 76, 25, 29, 66, 72, 78, 73, 73, 72, 75, 76, 74, 75, 76, 66, 72]
+_PK_HASH_XK = 0x7B
+_PK_CRC_XOR = 592334181
+_PK_CRC_XK = 0xDEADBEEF
 
-
-def _trial_shadow_paths() -> list[Path]:
-    home = Path.home()
-    if sys.platform == "win32":
-        appdata = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
-        localappdata = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
-        return [
-            appdata / "asr_cache" / "shadow.dat",
-            localappdata / "asr_data" / "cache.dat",
-            localappdata / "Temp" / "asr_tmp.dat",
-        ]
-    elif sys.platform == "darwin":
-        return [
-            home / "Library" / "Caches" / "com.apple.dt.Xcode" / "asr_shadow.dat",
-            home / "Library" / "Preferences" / "asr_pref.dat",
-            home / ".asr_shadow",
-        ]
-    else:
-        return [
-            home / ".cache" / "asr_shadow.dat",
-            home / ".config" / "asr_pref.dat",
-            home / ".asr_shadow",
-        ]
-
-
-PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqYMAMTfZprD/eXWvCK9U
-ZpcM9vK8pvqHjDl3+yWOT6HrY7M/dR4EQCpZ/W4ijv1cWkIO/h3R/idkxlizKjgL
-6pIDfJWAnMjWKeZCJsBWeb8qwA70Qez/U2rZYZpwjmKk0aUjRSJts/X5Tr2tb3xV
-FVhOshrstugE37iDL4zeyRe9iS+dqxB+jpCVNeDDlLx+z6ybUT/1GlXcYLuARLPt
-LSsST6I5G2AydGq8xmPONqtG0RTWQd2sD7MvwlnPXBFUZcWyG9dRtvEF2GSIzmfF
-i6RHREdQYwtFKNUoBEmVvttOOIYJW1Qpzvc6ABFpcF8ntots4wqyU1rXyJLM+e2g
-xQIDAQAB
------END PUBLIC KEY-----"""
-
-_PUBLIC_KEY_HASH = hashlib.sha256(PUBLIC_KEY_PEM).hexdigest()[:16]
 _LICENSE_VERSION = "1"
+
+_debug_tainted = False
+
+
+def _reconstruct_public_key() -> bytes:
+    s1 = bytes(b ^ _PEM_XK[0] for b in base64.b64decode(_PEM_E1))
+    s2 = bytes(b ^ _PEM_XK[1] for b in base64.b64decode(_PEM_E2))
+    s3 = bytes(b ^ _PEM_XK[2] for b in base64.b64decode(_PEM_E3))
+    return s1 + s2 + s3
+
+
+def _verify_pk_integrity(pem: bytes) -> bool:
+    h = hashlib.sha256(pem).hexdigest()
+    expected_h = "".join(chr(v ^ _PK_HASH_XK) for v in _PK_HASH_XOR)
+    if h != expected_h:
+        return False
+    crc = zlib.crc32(pem) & 0xFFFFFFFF
+    expected_crc = _PK_CRC_XOR ^ _PK_CRC_XK
+    if crc != expected_crc:
+        return False
+    return True
+
+
+_PUBLIC_KEY_PEM = _reconstruct_public_key()
+
+
+def _check_debugger():
+    global _debug_tainted
+    if _debug_tainted:
+        return
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            if ctypes.windll.kernel32.IsDebuggerPresent():
+                _debug_tainted = True
+                return
+            if ctypes.windll.kernel32.CheckRemoteDebuggerPresent(
+                ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(ctypes.c_int())
+            ):
+                ptr = ctypes.c_int()
+                ctypes.windll.kernel32.CheckRemoteDebuggerPresent(
+                    ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(ptr)
+                )
+                if ptr.value:
+                    _debug_tainted = True
+                    return
+        debug_env_vars = [
+            "DYLD_INSERT_LIBRARIES", "LD_PRELOAD",
+            "_XCODE_DEBUG", "PYDEVD_LOAD_VALUES_ASYNC",
+            "PYTHONDEBUG", "PYTHONINSPECT",
+        ]
+        for var in debug_env_vars:
+            if os.environ.get(var):
+                _debug_tainted = True
+                return
+        if sys.platform == "darwin":
+            import ctypes
+            libc = ctypes.CDLL("libc.dylib", use_errno=True)
+            P_TRACED = 0x00000800
+            kinfo_proc_size = 4096
+            buf = ctypes.create_string_buffer(kinfo_proc_size)
+            size = ctypes.c_size_t(kinfo_proc_size)
+            mib = (ctypes.c_int * 4)(1, 14, libc.getpid(), 0)
+            if libc.sysctl(mib, 4, buf, ctypes.byref(size), None, 0) == 0:
+                kp_flags = struct.unpack_from("N", buf.raw, 32)[0] if size.value >= 40 else 0
+                if kp_flags & P_TRACED:
+                    _debug_tainted = True
+    except Exception:
+        pass
 
 
 def _run(args: list[str]) -> str:
@@ -82,6 +118,20 @@ def _run(args: list[str]) -> str:
         return ""
 
 
+def _validate_uuid(val: str) -> bool:
+    if len(val) != 36:
+        return False
+    parts = val.split("-")
+    if [len(p) for p in parts] != [8, 4, 4, 4, 12]:
+        return False
+    return all(c in "0123456789ABCDEFabcdef" for p in parts for c in p)
+
+
+def _validate_mac(val: str) -> bool:
+    clean = val.replace(":", "").replace("-", "").upper()
+    return len(clean) == 12 and all(c in "0123456789ABCDEF" for c in clean)
+
+
 def _ioreg_entries() -> list[str]:
     raw = _run(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"])
     items = []
@@ -90,6 +140,8 @@ def _ioreg_entries() -> list[str]:
             if key in line and "=" in line:
                 val = line.split("=", 1)[1].strip().strip('"')
                 if val:
+                    if key == "IOPlatformUUID" and not _validate_uuid(val):
+                        continue
                     items.append(f"{key}:{val}")
     return items
 
@@ -99,6 +151,20 @@ def _sysctl_hw() -> list[str]:
     for key in ("hw.model", "hw.machine", "hw.ncpu", "hw.memsize"):
         v = _run(["sysctl", "-n", key])
         if v:
+            if key == "hw.ncpu":
+                try:
+                    n = int(v)
+                    if n < 1 or n > 256:
+                        continue
+                except ValueError:
+                    continue
+            if key == "hw.memsize":
+                try:
+                    m = int(v)
+                    if m < 1_000_000 or m > 10_000_000_000_000:
+                        continue
+                except ValueError:
+                    continue
             out.append(f"{key}:{v}")
     return out
 
@@ -110,7 +176,7 @@ def _mac_addresses() -> list[str]:
         for line in raw.splitlines():
             if "Physical Address" in line or "物理地址" in line:
                 mac = line.split(":")[-1].strip()
-                if mac:
+                if mac and _validate_mac(mac):
                     out.append("mac:" + mac.replace("-", ":"))
     else:
         ifs = _run(["ifconfig"]).splitlines()
@@ -121,7 +187,8 @@ def _mac_addresses() -> list[str]:
                 cur = s.split(":")[0]
             elif "ether" in s and cur:
                 mac = s.split("ether", 1)[1].strip()
-                out.append(f"mac:{cur}:{mac}")
+                if _validate_mac(mac):
+                    out.append(f"mac:{cur}:{mac}")
                 cur = None
     return out
 
@@ -133,7 +200,9 @@ def _windows_hw() -> list[str]:
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography"
         ) as k:
-            out.append("MachineGuid:" + winreg.QueryValueEx(k, "MachineGuid")[0])
+            guid = winreg.QueryValueEx(k, "MachineGuid")[0]
+            if _validate_uuid(guid):
+                out.append("MachineGuid:" + guid)
     except Exception:
         pass
     import re
@@ -181,6 +250,24 @@ def _b64decode(data: str) -> bytes:
     return base64.b64decode(data.encode("ascii"))
 
 
+def _license_fernet():
+    from cryptography.fernet import Fernet
+    try:
+        mc = machine_code()
+    except RuntimeError:
+        mc = "unknown"
+    key_material = hashlib.sha256(f"asr_license_fernet:{mc}".encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(key_material))
+
+
+def _license_hmac_key() -> bytes:
+    try:
+        mc = machine_code()
+    except RuntimeError:
+        mc = "unknown"
+    return hashlib.sha256(f"asr_license_hmac:{mc}".encode()).digest()
+
+
 def sign_license(machine: str, private_key_pem: bytes) -> str:
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding
@@ -193,7 +280,7 @@ def sign_license(machine: str, private_key_pem: bytes) -> str:
 
 def verify_license(code: str) -> tuple[bool, str, dict]:
     try:
-        if hashlib.sha256(PUBLIC_KEY_PEM).hexdigest()[:16] != _PUBLIC_KEY_HASH:
+        if not _verify_pk_integrity(_PUBLIC_KEY_PEM):
             return False, "授权模块完整性校验失败", {}
         try:
             payload_b64, sig_b64 = code.strip().split(".", 1)
@@ -211,7 +298,7 @@ def verify_license(code: str) -> tuple[bool, str, dict]:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import padding
 
-        pub = serialization.load_pem_public_key(PUBLIC_KEY_PEM)
+        pub = serialization.load_pem_public_key(_PUBLIC_KEY_PEM)
         try:
             pub.verify(signature, payload, padding.PKCS1v15(), hashes.SHA256())
         except Exception:
@@ -235,22 +322,48 @@ def save_registration(code: str) -> bool:
     if not _machine_matches(info):
         return False
     try:
-        REG_FILE.write_text(
-            json.dumps({"code": code, "machine": info.get("machine")}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        plain = json.dumps(
+            {"code": code, "machine": info.get("machine")},
+            ensure_ascii=False, indent=2,
         )
+        encrypted = _license_fernet().encrypt(plain.encode("utf-8")).decode("ascii")
+        mac = hmac.new(_license_hmac_key(), encrypted.encode("ascii"), hashlib.sha256).hexdigest()
+        blob = json.dumps({"d": encrypted, "m": mac}, ensure_ascii=False)
+        REG_FILE.write_text(blob, encoding="utf-8")
     except OSError:
         return False
     reset_trial()
     return True
 
 
-def current_registration() -> dict | None:
+def _read_license_data() -> dict | None:
     if not REG_FILE.exists():
         return None
     try:
-        data = json.loads(REG_FILE.read_text(encoding="utf-8"))
+        raw = REG_FILE.read_text(encoding="utf-8")
+        blob = json.loads(raw)
     except (OSError, ValueError):
+        return None
+    if "d" in blob and "m" in blob:
+        encrypted = blob["d"]
+        expected_mac = hmac.new(
+            _license_hmac_key(), encrypted.encode("ascii"), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected_mac, blob["m"]):
+            return None
+        try:
+            plain = _license_fernet().decrypt(encrypted.encode("ascii")).decode("utf-8")
+            data = json.loads(plain)
+        except Exception:
+            return None
+    else:
+        data = blob
+    return data
+
+
+def current_registration() -> dict | None:
+    data = _read_license_data()
+    if not data:
         return None
     code = data.get("code", "")
     ok, msg, info = verify_license(code)
@@ -260,6 +373,54 @@ def current_registration() -> dict | None:
     return info
 
 
+def _trial_file() -> Path:
+    home = Path.home()
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", home)) / "asr"
+    elif sys.platform == "darwin":
+        base = home / "Library" / "Application Support" / "asr"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share")) / "asr"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "trial.dat"
+
+
+def _mc_hash_suffix() -> str:
+    try:
+        mc = machine_code()
+    except RuntimeError:
+        mc = "unknown"
+    return hashlib.sha256(f"asr_shadow:{mc}".encode()).hexdigest()[:12]
+
+
+def _trial_shadow_paths() -> list[Path]:
+    home = Path.home()
+    suffix = _mc_hash_suffix()
+    if sys.platform == "win32":
+        appdata = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+        localappdata = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
+        return [
+            appdata / f"asr_cache_{suffix}" / "shadow.dat",
+            localappdata / f"asr_data_{suffix}" / "cache.dat",
+            localappdata / "Temp" / f"asr_{suffix}.dat",
+            localappdata / f"Microsoft_{suffix}" / "clr.dat",
+        ]
+    elif sys.platform == "darwin":
+        return [
+            home / "Library" / "Caches" / f"com.apple.dt.{suffix}" / "shadow.dat",
+            home / "Library" / "Preferences" / f"asr_{suffix}.plist",
+            home / f".{suffix}_cache",
+            home / "Library" / "Caches" / f"asr_{suffix}" / ".dat",
+        ]
+    else:
+        return [
+            home / ".cache" / f"asr_{suffix}.dat",
+            home / ".config" / f"asr_{suffix}.conf",
+            home / f".{suffix}_shadow",
+            home / ".local" / "share" / f"asr_{suffix}" / ".dat",
+        ]
+
+
 def _trial_fernet():
     from cryptography.fernet import Fernet
 
@@ -267,44 +428,74 @@ def _trial_fernet():
         code = machine_code()
     except RuntimeError:
         code = "unknown"
-    key = base64.urlsafe_b64encode(hashlib.sha256(f"asr_trial_fernet:{code}".encode()).digest())
+    key = base64.urlsafe_b64encode(
+        hashlib.sha256(f"asr_trial_fernet:{code}".encode()).digest()
+    )
     return Fernet(key)
 
 
 def _encrypt_trial(count: int) -> str:
-    return _trial_fernet().encrypt(str(count).encode("utf-8")).decode("ascii")
+    ts = int(time.time())
+    payload = json.dumps({"c": count, "t": ts}, separators=(",", ":"))
+    return _trial_fernet().encrypt(payload.encode("utf-8")).decode("ascii")
 
 
 def _decrypt_trial(data: str) -> int:
     try:
         plain = _trial_fernet().decrypt(data.encode("ascii"))
-        return int(plain.decode("utf-8"))
+        obj = json.loads(plain.decode("utf-8"))
+        count = obj.get("c", 0)
+        ts = obj.get("t", 0)
+        now = int(time.time())
+        if ts > now + 300:
+            return TRIAL_MAX
+        if now - ts > 365 * 24 * 3600:
+            return TRIAL_MAX
+        return count
     except Exception:
-        return 0
+        try:
+            plain = _trial_fernet().decrypt(data.encode("ascii"))
+            return int(plain.decode("utf-8"))
+        except Exception:
+            return 0
 
 
 def _mark_trial_used():
     data = {}
     if REG_FILE.exists():
         try:
-            data = json.loads(REG_FILE.read_text(encoding="utf-8"))
+            raw = REG_FILE.read_text(encoding="utf-8")
+            blob = json.loads(raw)
+            if "d" in blob and "m" in blob:
+                encrypted = blob["d"]
+                expected_mac = hmac.new(
+                    _license_hmac_key(), encrypted.encode("ascii"), hashlib.sha256
+                ).hexdigest()
+                if hmac.compare_digest(expected_mac, blob["m"]):
+                    plain = _license_fernet().decrypt(encrypted.encode("ascii")).decode("utf-8")
+                    data = json.loads(plain)
+                else:
+                    data = {}
+            else:
+                data = blob
         except (OSError, ValueError):
             pass
     data["trial_used"] = True
     try:
-        REG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        plain = json.dumps(data, ensure_ascii=False, indent=2)
+        encrypted = _license_fernet().encrypt(plain.encode("utf-8")).decode("ascii")
+        mac = hmac.new(_license_hmac_key(), encrypted.encode("ascii"), hashlib.sha256).hexdigest()
+        blob = json.dumps({"d": encrypted, "m": mac}, ensure_ascii=False)
+        REG_FILE.write_text(blob, encoding="utf-8")
     except OSError:
         pass
 
 
 def _is_trial_marked() -> bool:
-    if not REG_FILE.exists():
+    data = _read_license_data()
+    if data is None:
         return False
-    try:
-        data = json.loads(REG_FILE.read_text(encoding="utf-8"))
-        return bool(data.get("trial_used"))
-    except (OSError, ValueError):
-        return False
+    return bool(data.get("trial_used"))
 
 
 def _read_trial_from_shadows() -> int | None:
@@ -369,17 +560,56 @@ def reset_trial():
                 p.unlink()
         except OSError:
             pass
-    if REG_FILE.exists():
-        try:
-            data = json.loads(REG_FILE.read_text(encoding="utf-8"))
-            data.pop("trial_used", None)
-            if not data.get("code") and not data.get("machine"):
+    data = _read_license_data()
+    if data is not None:
+        data.pop("trial_used", None)
+        if data.get("code") or data.get("machine"):
+            try:
+                plain = json.dumps(data, ensure_ascii=False, indent=2)
+                encrypted = _license_fernet().encrypt(plain.encode("utf-8")).decode("ascii")
+                mac = hmac.new(
+                    _license_hmac_key(), encrypted.encode("ascii"), hashlib.sha256
+                ).hexdigest()
+                blob = json.dumps({"d": encrypted, "m": mac}, ensure_ascii=False)
+                REG_FILE.write_text(blob, encoding="utf-8")
+            except OSError:
+                pass
+        else:
+            try:
                 REG_FILE.unlink()
-            else:
-                REG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+    elif REG_FILE.exists():
+        try:
+            REG_FILE.unlink()
         except OSError:
             pass
 
 
 def is_registered() -> bool:
     return current_registration() is not None
+
+
+def check_auth() -> bool:
+    """多点授权检查：供核心业务函数调用，独立于 GUI 层检查。"""
+    _check_debugger()
+    if _debug_tainted:
+        return False
+    if not _verify_pk_integrity(_PUBLIC_KEY_PEM):
+        return False
+    return current_registration() is not None
+
+
+def check_trial_or_registered() -> tuple[bool, str]:
+    """综合检查：返回 (是否允许使用, 提示消息)。"""
+    _check_debugger()
+    if _debug_tainted:
+        return False, "运行环境异常"
+    if not _verify_pk_integrity(_PUBLIC_KEY_PEM):
+        return False, "授权模块校验失败"
+    if is_registered():
+        return True, ""
+    used = trial_count()
+    if used < TRIAL_MAX:
+        return True, ""
+    return False, "试用次数已用完，请注册"

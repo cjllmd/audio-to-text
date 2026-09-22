@@ -13,6 +13,8 @@ except ImportError:
 import asr
 from license import (
     TRIAL_MAX,
+    check_auth,
+    check_trial_or_registered,
     current_registration,
     increment_trial,
     is_registered,
@@ -273,26 +275,30 @@ class App(_BASE_CLASS):
             self.num_speakers_combo.config(state="disabled")
 
     def _check_license(self) -> bool:
+        ok, msg = check_trial_or_registered()
+        if not ok:
+            messagebox.showinfo(
+                "授权提示",
+                msg or "试用次数已用完，请注册后继续使用。\n"
+                "请将机器码发送给卖方获取注册码。",
+            )
+            dlg = LicenseDialog(self)
+            dlg.show()
+            return is_registered()
         if is_registered():
             return True
+        if not check_auth():
+            messagebox.showwarning("授权校验", "授权验证异常，请重新注册。")
+            return False
         used = trial_count()
-        if used < TRIAL_MAX:
-            remaining = increment_trial()
-            messagebox.showinfo(
-                "免费试用",
-                f"您正在使用免费试用模式（第 {used + 1}/{TRIAL_MAX} 次）。\n"
-                f"剩余 {remaining} 次试用机会。\n"
-                "试用结束后需注册才能继续使用。",
-            )
-            return True
+        remaining = increment_trial()
         messagebox.showinfo(
-            "试用已结束",
-            "免费试用次数已用完，请注册后继续使用。\n"
-            "请将对话框中的机器码发送给卖方获取注册码。",
+            "免费试用",
+            f"您正在使用免费试用模式（第 {used + 1}/{TRIAL_MAX} 次）。\n"
+            f"剩余 {remaining} 次试用机会。\n"
+            "试用结束后需注册才能继续使用。",
         )
-        dlg = LicenseDialog(self)
-        dlg.show()
-        return is_registered()
+        return True
 
     def _show_license(self):
         dlg = LicenseDialog(self)

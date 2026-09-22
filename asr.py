@@ -1,8 +1,11 @@
 import os
 import wave
 import argparse
+import subprocess
 import numpy as np
 import sherpa_onnx
+import hashlib
+import struct as _struct
 
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
@@ -149,6 +152,14 @@ def create_speaker_diarization(
     return sherpa_onnx.OfflineSpeakerDiarization(config)
 
 
+def _verify_core_auth() -> None:
+    from license import check_auth, check_trial_or_registered
+    if not check_auth():
+        ok, msg = check_trial_or_registered()
+        if not ok:
+            raise RuntimeError(msg or "授权验证失败")
+
+
 def transcribe_with_diarization(
     audio_path: str,
     model: str = "paraformer-small",
@@ -157,6 +168,7 @@ def transcribe_with_diarization(
     num_clusters: int = -1,
     clustering_threshold: float = 0.5,
 ) -> str:
+    _verify_core_auth()
     samples, sample_rate = read_wave(audio_path)
     samples, sample_rate = resample_if_needed(samples, sample_rate, 16000)
 
@@ -223,6 +235,7 @@ def transcribe_file(
     use_vad: bool = True,
     num_threads: int = 4,
 ) -> str:
+    _verify_core_auth()
     recognizer = create_recognizer(model, language, num_threads)
 
     samples, sample_rate = read_wave(audio_path)
@@ -273,14 +286,28 @@ def transcribe_file(
 def convert_to_wav(input_path: str) -> str:
     if input_path.lower().endswith(".wav"):
         return input_path
+    wav_path = os.path.splitext(input_path)[0] + "_temp.wav"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", input_path,
+                "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
+                wav_path,
+            ],
+            capture_output=True, check=True, timeout=120,
+        )
+        return wav_path
+    except FileNotFoundError:
+        pass
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg 转换失败: {e.stderr.decode(errors='replace') if e.stderr else e}")
     try:
         import soundfile as sf
     except ImportError:
-        raise ImportError("非 WAV 格式需要 soundfile，请安装: pip install soundfile")
+        raise ImportError("非 WAV 格式需要 ffmpeg 或 soundfile，请安装其一")
     data, sr = sf.read(input_path, dtype="int16")
     if data.ndim > 1:
         data = data[:, 0]
-    wav_path = os.path.splitext(input_path)[0] + "_temp.wav"
     if sr != 16000:
         ratio = 16000 / sr
         num_samples = int(len(data) * ratio)

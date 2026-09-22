@@ -5,18 +5,24 @@
   1) 首次：生成密钥对
      python tools/gen_license.py gen-keypair --out tools/keys
 
-  2) 把生成的公钥 PEM 内容粘贴到 license.py 的 PUBLIC_KEY_PEM。
+  2) 运行混淆编码工具，将公钥转为 XOR 分段编码：
+     python tools/gen_license.py encode-pub --pub tools/keys/public.pem
 
-  3) 为某台机器签发注册码（永久有效）：
+  3) 将输出的编码常量替换到 license.py 顶部的 _PEM_E1/E2/E3 等变量。
+
+  4) 为某台机器签发注册码（永久有效）：
      python tools/gen_license.py issue --machine XXXXX... --key tools/keys/private.pem
 
-  4) 校验某个注册码：
+  5) 校验某个注册码：
      python tools/gen_license.py verify --code "...."
 """
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import sys
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -47,7 +53,34 @@ def gen_keypair(out_dir: Path) -> None:
     )
     print(f"私钥已写入：{priv}  （请立即妥善保管，勿外泄）")
     print(f"公钥已写入：{pub}")
-    print("\n请将 public.pem 的内容完整粘贴到 license.py 的 PUBLIC_KEY_PEM：")
+    print("\n下一步：运行 encode-pub 命令生成混淆编码常量")
+
+
+def encode_pub(pub_path: Path) -> None:
+    pem = pub_path.read_bytes()
+    n = len(pem)
+    s1, s2, s3 = pem[:n//3], pem[n//3:2*n//3], pem[2*n//3:]
+    xk = (0x5A, 0xA3, 0xC7)
+    e1 = base64.b64encode(bytes(b ^ xk[0] for b in s1)).decode()
+    e2 = base64.b64encode(bytes(b ^ xk[1] for b in s2)).decode()
+    e3 = base64.b64encode(bytes(b ^ xk[2] for b in s3)).decode()
+
+    h = hashlib.sha256(pem).hexdigest()
+    hash_xor_xk = 0x7B
+    hash_ints = [ord(c) ^ hash_xor_xk for c in h]
+
+    crc = zlib.crc32(pem) & 0xFFFFFFFF
+    crc_xor = crc ^ 0xDEADBEEF
+
+    print("将以下常量替换到 license.py：\n")
+    print(f'_PEM_E1 = "{e1}"')
+    print(f'_PEM_E2 = "{e2}"')
+    print(f'_PEM_E3 = "{e3}"')
+    print(f"_PEM_XK = {xk}")
+    print(f"\n_PK_HASH_XOR = {hash_ints}")
+    print(f"_PK_HASH_XK = {hex(hash_xor_xk)}")
+    print(f"_PK_CRC_XOR = {crc_xor}")
+    print(f"_PK_CRC_XK = {hex(0xDEADBEEF)}")
 
 
 def issue(machine: str, key_path: Path) -> None:
@@ -74,6 +107,9 @@ def main() -> int:
     p_kp = sub.add_parser("gen-keypair", help="生成 RSA 密钥对")
     p_kp.add_argument("--out", type=Path, default=Path("tools/keys"), help="输出目录")
 
+    p_enc = sub.add_parser("encode-pub", help="将公钥 PEM 编码为混淆常量")
+    p_enc.add_argument("--pub", type=Path, default=Path("tools/keys/public.pem"), help="公钥路径")
+
     p_issue = sub.add_parser("issue", help="为机器码签发注册码（永久）")
     p_issue.add_argument("--machine", required=True, help="客户的机器码（24位）")
     p_issue.add_argument("--key", type=Path, default=Path("tools/keys/private.pem"), help="私钥路径")
@@ -84,6 +120,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.cmd == "gen-keypair":
         gen_keypair(args.out)
+    elif args.cmd == "encode-pub":
+        encode_pub(args.pub)
     elif args.cmd == "issue":
         issue(args.machine, args.key)
     elif args.cmd == "verify":
