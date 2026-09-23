@@ -6,7 +6,8 @@ mkdir -p "$MODEL_DIR"
 
 echo "=== 下载 SenseVoice-Small INT8 模型 (中/粤/英/日/韩, ~229MB) ==="
 cd "$MODEL_DIR"
-if [ ! -d "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" ]; then
+if [ ! -f "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx" ]; then
+    rm -rf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
     curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
     tar xvf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
     rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
@@ -26,7 +27,8 @@ fi
 
 echo ""
 echo "=== 下载 Pyannote 说话人分割模型 (~6.6MB) ==="
-if [ ! -d "sherpa-onnx-pyannote-segmentation-3-0" ]; then
+if [ ! -f "sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx" ]; then
+    rm -rf sherpa-onnx-pyannote-segmentation-3-0
     curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
     tar xvf sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
     rm sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
