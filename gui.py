@@ -351,7 +351,7 @@ class App(_BASE_CLASS):
 
         self._drop_hint = tk.Label(
             text_col,
-            text="支持 WAV / MP3 / M4A 格式",
+            text="支持 WAV / MP3 / M4A / MP4 格式",
             fg=_TEXT_MUTED, bg=_DROP_BG,
             font=("PingFang SC", 9),
             anchor="w",
@@ -481,8 +481,8 @@ class App(_BASE_CLASS):
 
     def _validate_audio(self, path: str) -> bool:
         ext = os.path.splitext(path)[1].lower()
-        if ext not in (".wav", ".mp3", ".m4a"):
-            messagebox.showwarning("格式不支持", f"不支持 {ext or '此格式'} 文件\n仅支持 WAV / MP3 / M4A 格式")
+        if ext not in (".wav", ".mp3", ".m4a", ".mp4"):
+            messagebox.showwarning("格式不支持", f"不支持 {ext or '此格式'} 文件\n仅支持 WAV / MP3 / M4A / MP4 格式")
             return False
         return True
 
@@ -556,7 +556,8 @@ class App(_BASE_CLASS):
         messagebox.showinfo(
             "关于",
             f"音频转文字\n\n"
-            f"支持：中文 / 英文 / 日文 / 韩文 / 粤语\n\n"
+            f"支持：中文 / 英文 / 日文 / 韩文 / 粤语\n"
+            f"格式：WAV / MP3 / M4A / MP4\n\n"
             f"授权状态：{status}",
         )
 
@@ -564,10 +565,11 @@ class App(_BASE_CLASS):
         path = filedialog.askopenfilename(
             title="选择音频文件",
             filetypes=[
-                ("音频文件", "*.wav *.mp3 *.m4a"),
+                ("音视频文件", "*.wav *.mp3 *.m4a *.mp4"),
                 ("WAV", "*.wav"),
                 ("MP3", "*.mp3"),
                 ("M4A", "*.m4a"),
+                ("MP4", "*.mp4"),
                 ("所有文件", "*.*"),
             ],
         )
