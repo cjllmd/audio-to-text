@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from license import verify_license, sign_license
+from license import verify_license, sign_license, _PEM_XK, _PK_HASH_XK, _PK_CRC_XK
 
 
 def gen_keypair(out_dir: Path) -> None:
@@ -60,17 +60,17 @@ def encode_pub(pub_path: Path) -> None:
     pem = pub_path.read_bytes()
     n = len(pem)
     s1, s2, s3 = pem[:n//3], pem[n//3:2*n//3], pem[2*n//3:]
-    xk = (0x5A, 0xA3, 0xC7)
+    xk = _PEM_XK
     e1 = base64.b64encode(bytes(b ^ xk[0] for b in s1)).decode()
     e2 = base64.b64encode(bytes(b ^ xk[1] for b in s2)).decode()
     e3 = base64.b64encode(bytes(b ^ xk[2] for b in s3)).decode()
 
     h = hashlib.sha256(pem).hexdigest()
-    hash_xor_xk = 0x7B
+    hash_xor_xk = _PK_HASH_XK
     hash_ints = [ord(c) ^ hash_xor_xk for c in h]
 
     crc = zlib.crc32(pem) & 0xFFFFFFFF
-    crc_xor = crc ^ 0xDEADBEEF
+    crc_xor = crc ^ _PK_CRC_XK
 
     print("将以下常量替换到 license.py：\n")
     print(f'_PEM_E1 = "{e1}"')
@@ -80,7 +80,7 @@ def encode_pub(pub_path: Path) -> None:
     print(f"\n_PK_HASH_XOR = {hash_ints}")
     print(f"_PK_HASH_XK = {hex(hash_xor_xk)}")
     print(f"_PK_CRC_XOR = {crc_xor}")
-    print(f"_PK_CRC_XK = {hex(0xDEADBEEF)}")
+    print(f"_PK_CRC_XK = {hex(_PK_CRC_XK)}")
 
 
 def issue(machine: str, key_path: Path) -> None:

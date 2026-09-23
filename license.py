@@ -37,74 +37,119 @@ _PK_CRC_XK = 0xdeadbeef
 
 _LICENSE_VERSION = "1"
 
-_debug_tainted = False
-
-
-def _reconstruct_public_key() -> bytes:
+def _make_verifier():
+    """闭包隐藏全局状态：公钥和完整性校验封装在闭包中，防止外部 patch 全局变量。"""
     s1 = bytes(b ^ _PEM_XK[0] for b in base64.b64decode(_PEM_E1))
     s2 = bytes(b ^ _PEM_XK[1] for b in base64.b64decode(_PEM_E2))
     s3 = bytes(b ^ _PEM_XK[2] for b in base64.b64decode(_PEM_E3))
-    return s1 + s2 + s3
+    pem = s1 + s2 + s3
 
-
-def _verify_pk_integrity(pem: bytes) -> bool:
     h = hashlib.sha256(pem).hexdigest()
     expected_h = "".join(chr(v ^ _PK_HASH_XK) for v in _PK_HASH_XOR)
-    if h != expected_h:
-        return False
     crc = zlib.crc32(pem) & 0xFFFFFFFF
     expected_crc = _PK_CRC_XOR ^ _PK_CRC_XK
-    if crc != expected_crc:
-        return False
-    return True
+
+    pub_key_cache = None
+
+    def get_pub_key():
+        nonlocal pub_key_cache
+        if pub_key_cache is None:
+            from cryptography.hazmat.primitives import serialization
+            pub_key_cache = serialization.load_pem_public_key(pem)
+        return pub_key_cache
+
+    def verify_pk_integrity() -> bool:
+        if hashlib.sha256(pem).hexdigest() != expected_h:
+            return False
+        if (zlib.crc32(pem) & 0xFFFFFFFF) != expected_crc:
+            return False
+        return True
+
+    return get_pub_key, verify_pk_integrity
 
 
-_PUBLIC_KEY_PEM = _reconstruct_public_key()
+_get_pub_key, _verify_pk_integrity = _make_verifier()
 
+# 以下两行防止 _make_verifier 产生的闭包被垃圾回收后重新定义
+_verify_pk_integrity_cell = _verify_pk_integrity.__code__
+import sys as _sys
+if _verify_pk_integrity_cell is not _verify_pk_integrity.__code__:
+    _sys.exit(1)
 
-def _check_debugger():
-    global _debug_tainted
-    if _debug_tainted:
-        return
-    try:
-        if sys.platform == "win32":
-            import ctypes
-            if ctypes.windll.kernel32.IsDebuggerPresent():
-                _debug_tainted = True
-                return
-            if ctypes.windll.kernel32.CheckRemoteDebuggerPresent(
-                ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(ctypes.c_int())
-            ):
+def _make_debugger_check():
+    """闭包封装反调试状态，防止外部直接 patch `_debug_tainted` 变量。"""
+    _tainted = False
+
+    def check():
+        nonlocal _tainted
+        if _tainted:
+            return True
+        try:
+            if sys.platform == "win32":
+                import ctypes
+                if ctypes.windll.kernel32.IsDebuggerPresent():
+                    _tainted = True
+                    return True
                 ptr = ctypes.c_int()
-                ctypes.windll.kernel32.CheckRemoteDebuggerPresent(
+                if ctypes.windll.kernel32.CheckRemoteDebuggerPresent(
                     ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(ptr)
-                )
-                if ptr.value:
-                    _debug_tainted = True
-                    return
-        debug_env_vars = [
-            "DYLD_INSERT_LIBRARIES", "LD_PRELOAD",
-            "_XCODE_DEBUG", "PYDEVD_LOAD_VALUES_ASYNC",
-            "PYTHONDEBUG", "PYTHONINSPECT",
-        ]
-        for var in debug_env_vars:
-            if os.environ.get(var):
-                _debug_tainted = True
-                return
-        if sys.platform == "darwin":
-            import ctypes
-            libc = ctypes.CDLL("libc.dylib", use_errno=True)
-            P_TRACED = 0x00000800
-            kinfo_proc_size = 4096
-            buf = ctypes.create_string_buffer(kinfo_proc_size)
-            size = ctypes.c_size_t(kinfo_proc_size)
-            mib = (ctypes.c_int * 4)(1, 14, libc.getpid(), 0)
-            if libc.sysctl(mib, 4, buf, ctypes.byref(size), None, 0) == 0:
-                kp_flags = struct.unpack_from("N", buf.raw, 32)[0] if size.value >= 40 else 0
-                if kp_flags & P_TRACED:
-                    _debug_tainted = True
-    except Exception:
-        pass
+                ):
+                    if ptr.value:
+                        _tainted = True
+                        return True
+            debug_env_vars = [
+                "DYLD_INSERT_LIBRARIES", "LD_PRELOAD",
+                "_XCODE_DEBUG", "PYDEVD_LOAD_VALUES_ASYNC",
+                "PYTHONDEBUG", "PYTHONINSPECT",
+                "PYCHARM_HOSTED", "PYDEV_CONSOLE_ENCODING",
+                "VSCODE_DEBUG", "DEBUGPY_ENABLE",
+            ]
+            for var in debug_env_vars:
+                if os.environ.get(var):
+                    _tainted = True
+                    return True
+            if sys.platform == "darwin":
+                import ctypes
+                libc = ctypes.CDLL("libc.dylib", use_errno=True)
+                P_TRACED = 0x00000800
+                kinfo_proc_size = 4096
+                buf = ctypes.create_string_buffer(kinfo_proc_size)
+                size = ctypes.c_size_t(kinfo_proc_size)
+                mib = (ctypes.c_int * 4)(1, 14, libc.getpid(), 0)
+                if libc.sysctl(mib, 4, buf, ctypes.byref(size), None, 0) == 0:
+                    kp_flags = struct.unpack_from("N", buf.raw, 32)[0] if size.value >= 40 else 0
+                    if kp_flags & P_TRACED:
+                        _tainted = True
+                        return True
+            if sys.platform == "linux":
+                try:
+                    with open("/proc/self/status") as f:
+                        for line in f:
+                            if line.startswith("TracerPid:"):
+                                pid = line.split(":")[1].strip()
+                                if pid != "0":
+                                    _tainted = True
+                                    return True
+                                break
+                except (OSError, IOError):
+                    pass
+                if os.environ.get("LD_PRELOAD"):
+                    _tainted = True
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def is_tainted():
+        return _tainted
+
+    return check, is_tainted
+
+
+_check_debugger, _debug_is_tainted = _make_debugger_check()
+
+# 模块加载时立即执行一次反调试检查
+_check_debugger()
 
 
 def _run(args: list[str]) -> str:
@@ -280,7 +325,7 @@ def sign_license(machine: str, private_key_pem: bytes) -> str:
 
 def verify_license(code: str) -> tuple[bool, str, dict]:
     try:
-        if not _verify_pk_integrity(_PUBLIC_KEY_PEM):
+        if not _verify_pk_integrity():
             return False, "授权模块完整性校验失败", {}
         try:
             payload_b64, sig_b64 = code.strip().split(".", 1)
@@ -295,10 +340,10 @@ def verify_license(code: str) -> tuple[bool, str, dict]:
             return False, "注册码内容损坏", {}
         if version != _LICENSE_VERSION:
             return False, "注册码版本不兼容", {}
-        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import padding
 
-        pub = serialization.load_pem_public_key(_PUBLIC_KEY_PEM)
+        pub = _get_pub_key()
         try:
             pub.verify(signature, payload, padding.PKCS1v15(), hashes.SHA256())
         except Exception:
@@ -593,9 +638,9 @@ def is_registered() -> bool:
 def check_auth() -> bool:
     """多点授权检查：供核心业务函数调用，独立于 GUI 层检查。"""
     _check_debugger()
-    if _debug_tainted:
+    if _debug_is_tainted():
         return False
-    if not _verify_pk_integrity(_PUBLIC_KEY_PEM):
+    if not _verify_pk_integrity():
         return False
     return current_registration() is not None
 
@@ -603,9 +648,9 @@ def check_auth() -> bool:
 def check_trial_or_registered() -> tuple[bool, str]:
     """综合检查：返回 (是否允许使用, 提示消息)。"""
     _check_debugger()
-    if _debug_tainted:
+    if _debug_is_tainted():
         return False, "运行环境异常"
-    if not _verify_pk_integrity(_PUBLIC_KEY_PEM):
+    if not _verify_pk_integrity():
         return False, "授权模块校验失败"
     if is_registered():
         return True, ""
