@@ -76,6 +76,72 @@ build_mac() {
     fi
 
     rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.build" "${OUTPUT_DIR}/${MAIN_MODULE}.dist"
+
+    create_dmg "${final_name}" "${arch}"
+}
+
+create_dmg() {
+    local app_path="$1"
+    local arch="$2"
+
+    if [[ ! -d "${app_path}" ]]; then
+        echo "⚠ .app not found, skipping DMG creation"
+        return
+    fi
+
+    local dmg_name="${OUTPUT_DIR}/${APP_NAME}-macos-${arch}.dmg"
+    local vol_name="${APP_NAME}"
+
+    echo ""
+    echo "=========================================="
+    echo "  Creating DMG installer"
+    echo "=========================================="
+
+    if [[ -f "${dmg_name}" ]]; then
+        rm -f "${dmg_name}"
+    fi
+
+    local tmp_dmg="${OUTPUT_DIR}/tmp_dmg.raw"
+
+    local app_size
+    app_size=$(du -sm "${app_path}" | cut -f1)
+    local dmg_size=$((app_size + 50))
+
+    hdiutil create -size "${dmg_size}m" -fs HFS+ -volname "${vol_name}" -layout NONE "${tmp_dmg}"
+
+    local mount_point
+    mount_point=$(hdiutil attach "${tmp_dmg}" -readwrite -nobrowse -noverify | tail -1 | awk '{print $NF}')
+
+    cp -R "${app_path}" "${mount_point}/"
+
+    ln -s /Applications "${mount_point}/Applications"
+
+    osascript -e "
+    tell application \"Finder\"
+        tell disk \"${vol_name}\"
+            open
+            set current view of container window to icon view
+            set icon size of the icon view options of container window to 96
+            set arrangement of the icon view options of container window to not arranged
+            set position of item \"${APP_NAME}.app\" of container window to {120, 120}
+            set position of item \"Applications\" of container window to {380, 120}
+            close
+            open
+            update without registering applications
+            delay 2
+        end tell
+    end tell
+    " 2>/dev/null || true
+
+    hdiutil detach "${mount_point}" -quiet -nobrowse
+
+    hdiutil convert "${tmp_dmg}" -format UDZO -imagekey zlib-level=9 -o "${dmg_name}"
+
+    rm -f "${tmp_dmg}"
+
+    echo ""
+    echo "✓ DMG created: ${dmg_name}"
+    echo "  Size: $(du -sh "${dmg_name}" | cut -f1)"
 }
 
 build_windows() {
@@ -128,6 +194,8 @@ clean() {
     rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.build"
     rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.dist"
     rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.app"
+    rm -f "${OUTPUT_DIR}/${APP_NAME}-macos-*.dmg"
+    rm -f "${OUTPUT_DIR}/tmp_dmg.raw"
     echo "Done."
 }
 
