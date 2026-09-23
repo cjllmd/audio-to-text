@@ -249,7 +249,7 @@ class LicenseDialog(tk.Toplevel):
 class App(_BASE_CLASS):
     def __init__(self):
         super().__init__()
-        self.title("音频转文字")
+        self.title("音频证据材料提取")
         self.configure(bg=_BG)
         self.resizable(False, False)
         self._set_icon()
@@ -555,7 +555,7 @@ class App(_BASE_CLASS):
                 status = "试用已用完，请注册"
         messagebox.showinfo(
             "关于",
-            f"音频转文字\n\n"
+            f"音频证据材料提取工具\n\n"
             f"支持：中文 / 英文 / 日文 / 韩文 / 粤语\n"
             f"格式：WAV / MP3 / M4A / MP4\n\n"
             f"授权状态：{status}",
