@@ -14,3 +14,6 @@ models/**/*.sh
 models/**/README.md
 models/**/LICENSE
 models/**/model.onnx
+
+# 大模型文件（>100MB），在 CI 或本地用 download_model.sh 动态下载
+models/**/model.int8.onnx
