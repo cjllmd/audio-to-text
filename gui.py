@@ -622,11 +622,32 @@ class App(_BASE_CLASS):
         self.result_text.delete("1.0", "end")
         self.result_text.insert("end", "识别中...\n")
 
-        asr_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr.py")
+        try:
+            _is_compiled = bool(__compiled__)
+        except NameError:
+            _is_compiled = False
 
-        cmd = [sys.executable, asr_script, audio_path,
-               "--model", model, "--language", language,
-               "--threads", "0", "--json-output"]
+        if _is_compiled:
+            # Nuitka 编译模式: sys.executable 可能指向不存在的 python3
+            # 需要找到真正的编译二进制
+            real_exe = sys.executable
+            if not os.path.exists(real_exe):
+                exe_dir = os.path.dirname(os.path.abspath(real_exe))
+                for f in os.listdir(exe_dir):
+                    p = os.path.join(exe_dir, f)
+                    if (os.path.isfile(p) and os.access(p, os.X_OK)
+                            and not f.endswith('.so') and not f.endswith('.dylib')
+                            and f != 'python3'):
+                        real_exe = p
+                        break
+            cmd = [real_exe, "--asr-worker", audio_path,
+                   "--model", model, "--language", language,
+                   "--threads", "0", "--json-output"]
+        else:
+            asr_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr.py")
+            cmd = [sys.executable, asr_script, audio_path,
+                   "--model", model, "--language", language,
+                   "--threads", "0", "--json-output"]
         if not use_vad:
             cmd.append("--no-vad")
         if use_diarize:
@@ -738,5 +759,12 @@ class App(_BASE_CLASS):
 
 
 if __name__ == "__main__":
+    # --asr-worker 模式：被 GUI 子进程调用时运行 ASR 识别逻辑
+    if "--asr-worker" in sys.argv:
+        sys.argv.remove("--asr-worker")
+        from asr import main as asr_main
+        asr_main()
+        sys.exit(0)
+
     app = App()
     app.mainloop()
