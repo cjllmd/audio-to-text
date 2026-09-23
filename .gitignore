@@ -8,4 +8,9 @@ tools/keys/
 dist/
 *.build/
 
-models/
+models/**/test_wavs/
+models/**/*.py
+models/**/*.sh
+models/**/README.md
+models/**/LICENSE
+models/**/model.onnx
