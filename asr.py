@@ -95,7 +95,7 @@ def create_speaker_diarization(
     embedding_model_path: str = None,
     num_threads: int = 4,
     num_clusters: int = -1,
-    clustering_threshold: float = 0.5,
+    clustering_threshold: float = 0.75,
 ):
     if segmentation_model_dir is None:
         segmentation_model_dir = os.path.join(MODELS_DIR, "sherpa-onnx-pyannote-segmentation-3-0")
@@ -155,7 +155,7 @@ def transcribe_with_diarization(
     language: str = "auto",
     num_threads: int = 0,
     num_clusters: int = -1,
-    clustering_threshold: float = 0.5,
+    clustering_threshold: float = 0.75,
 ) -> str:
     _verify_core_auth()
     if num_threads <= 0:
@@ -396,6 +396,7 @@ def main():
     parser.add_argument("--json-output", action="store_true", help="JSON 格式输出（供 GUI 调用）")
     parser.add_argument("--diarize", action="store_true", help="区分说话人")
     parser.add_argument("--num-speakers", type=int, default=-1, help="说话人数量（-1 为自动）")
+    parser.add_argument("--clustering-threshold", type=float, default=0.75, help="聚类阈值（自动模式下越高说话人越少，默认 0.75）")
     parser.add_argument(
         "--interactive", action="store_true", help="交互模式，连续输入文件路径识别"
     )
@@ -473,6 +474,7 @@ def main():
                 language=args.language,
                 num_threads=args.threads,
                 num_clusters=args.num_speakers,
+                clustering_threshold=args.clustering_threshold,
             )
         else:
             text = transcribe_file(
