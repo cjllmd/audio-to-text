@@ -22,34 +22,12 @@ def _cache_key(model: str, language: str, num_threads: int) -> str:
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
 MODEL_INFO = {
-    "paraformer-small": {
-        "dir": "sherpa-onnx-paraformer-zh-small-2024-03-09",
-        "desc": "Paraformer-zh-small INT8 (中/英, ~82MB)",
-        "langs": ["zh", "en"],
-    },
     "sensevoice": {
         "dir": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
         "desc": "SenseVoice-Small INT8 (中/粤/英/日/韩, ~241MB)",
         "langs": ["zh", "en", "ja", "ko", "yue"],
     },
 }
-
-
-def create_paraformer_small_recognizer(model_dir: str = None, num_threads: int = 4):
-    if model_dir is None:
-        model_dir = os.path.join(MODELS_DIR, MODEL_INFO["paraformer-small"]["dir"])
-    model_path = os.path.join(model_dir, "model.int8.onnx")
-    tokens_path = os.path.join(model_dir, "tokens.txt")
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(
-            f"Paraformer-zh-small 模型未找到: {model_path}\n"
-            "请先运行: bash download_model.sh"
-        )
-    return sherpa_onnx.OfflineRecognizer.from_paraformer(
-        paraformer=model_path,
-        tokens=tokens_path,
-        num_threads=num_threads,
-    )
 
 
 def create_sense_voice_recognizer(model_dir: str = None, language: str = "auto", num_threads: int = 4):
@@ -173,7 +151,7 @@ def _verify_core_auth() -> None:
 
 def transcribe_with_diarization(
     audio_path: str,
-    model: str = "paraformer-small",
+    model: str = "sensevoice",
     language: str = "auto",
     num_threads: int = 0,
     num_clusters: int = -1,
@@ -246,9 +224,7 @@ def create_recognizer(model: str, language: str = "auto", num_threads: int = 4):
     key = _cache_key(model, language, num_threads)
     if key in _RECOGNIZER_CACHE:
         return _RECOGNIZER_CACHE[key]
-    if model == "paraformer-small":
-        rec = create_paraformer_small_recognizer(num_threads=num_threads)
-    elif model == "sensevoice":
+    if model == "sensevoice":
         rec = create_sense_voice_recognizer(language=language, num_threads=num_threads)
     else:
         raise ValueError(f"不支持的模型: {model}，可选: {', '.join(MODEL_INFO.keys())}")
@@ -265,7 +241,7 @@ def _decode_segment(recognizer, sample_rate: int, segment: np.ndarray) -> str:
 
 def transcribe_file(
     audio_path: str,
-    model: str = "paraformer-small",
+    model: str = "sensevoice",
     language: str = "auto",
     use_vad: bool = True,
     num_threads: int = 0,
@@ -406,8 +382,8 @@ def main():
     parser.add_argument(
         "--model",
         choices=list(MODEL_INFO.keys()),
-        default="paraformer-small",
-        help="识别模型 (默认: paraformer-small)",
+        default="sensevoice",
+        help="识别模型 (默认: sensevoice)",
     )
     parser.add_argument(
         "--language",
@@ -466,13 +442,13 @@ def main():
         parser.print_help()
         print("\n可用模型:")
         for name, info in MODEL_INFO.items():
-            marker = " (默认)" if name == "paraformer-small" else ""
+            marker = " (默认)" if name == "sensevoice" else ""
             print(f"  {name}: {info['desc']}{marker}")
         print("\n示例:")
         print("  python asr.py audio.wav")
         print("  python asr.py audio.mp3 --model sensevoice")
         print("  python asr.py audio.wav --language zh --no-vad")
-        print("  python asr.py --interactive --model paraformer-small")
+        print("  python asr.py --interactive --model sensevoice")
         return
 
     if not os.path.exists(args.audio):

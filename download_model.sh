@@ -4,19 +4,8 @@ set -e
 MODEL_DIR="$(cd "$(dirname "$0")" && pwd)/models"
 mkdir -p "$MODEL_DIR"
 
-echo "=== 下载 Paraformer-zh-small INT8 模型 (中/英, ~42MB) ==="
-cd "$MODEL_DIR"
-if [ ! -d "sherpa-onnx-paraformer-zh-small-2024-03-09" ]; then
-    curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-small-2024-03-09.tar.bz2
-    tar xvf sherpa-onnx-paraformer-zh-small-2024-03-09.tar.bz2
-    rm sherpa-onnx-paraformer-zh-small-2024-03-09.tar.bz2
-    echo "Paraformer-zh-small 模型下载完成"
-else
-    echo "Paraformer-zh-small 模型已存在，跳过"
-fi
-
-echo ""
 echo "=== 下载 SenseVoice-Small INT8 模型 (中/粤/英/日/韩, ~229MB) ==="
+cd "$MODEL_DIR"
 if [ ! -d "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" ]; then
     curl -SL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
     tar xvf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2
