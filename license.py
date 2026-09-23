@@ -23,7 +23,7 @@ import zlib
 from pathlib import Path
 
 REG_FILE = Path.home() / ".asr_license.json"
-TRIAL_MAX = 10
+TRIAL_MAX = 3
 
 _PEM_E1 = "d3d3d3cYHx0TFHoKDxgWExl6ER8Dd3d3d3dQFxMTGBMwGxQYPTErMjEzHWMtahgbCx8cGxsVGRsLYhsXExMYGT0RGRsLHxsuCGwfCjh1Dh0JNBw8EzgMCzs0LFAAaRsxFGsfcQljaxsObBs+Dy91cT5vNQoLMBALEQ0wKDMSDAkAFBttais2MTsTOTssPBEgPWI9EB4X"
 _PEM_E2 = "xtTqiNnTqeDN88To6/rW8MD1kcXoz/mQk5Pv7uDXxuLC7Ij7+Zv25PaS1s/qkOeQ1MntwODC8vvozZvt1cTaz8mQm/HS64ip5sqa59fHksWU5uDOyfL29vnbk5HW0JbM4eDn7JaU5+Dh2tnFk9rPyJP19Pr2zJTv4u7gxPuTxOTR6c7U7OuW4Knhz5TszuzbkOrGwfbV"
