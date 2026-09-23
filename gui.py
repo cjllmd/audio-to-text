@@ -252,6 +252,7 @@ class App(_BASE_CLASS):
         self.title("音频转文字")
         self.configure(bg=_BG)
         self.resizable(False, False)
+        self._set_icon()
         self._proc = None
         self._proc_stdout = b""
         self._proc_stderr = b""
@@ -273,6 +274,29 @@ class App(_BASE_CLASS):
         help_menu.add_command(label="关于", command=self._show_about)
         menubar.add_cascade(label="帮助", menu=help_menu)
         self.config(menu=menubar)
+
+    def _set_icon(self):
+        icon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
+        if sys.platform == "darwin":
+            icns = os.path.join(icon_dir, "icon.icns")
+            if os.path.exists(icns):
+                try:
+                    self.tk.call("tk::mac::icon", icns)
+                except Exception:
+                    pass
+        ico = os.path.join(icon_dir, "icon.ico")
+        if os.path.exists(ico):
+            try:
+                self.iconbitmap(ico)
+            except Exception:
+                pass
+        png = os.path.join(icon_dir, "icon_256.png")
+        if os.path.exists(png):
+            try:
+                self._icon_photo = tk.PhotoImage(file=png)
+                self.iconphoto(True, self._icon_photo)
+            except Exception:
+                pass
 
     def _center_window(self):
         self.update_idletasks()
@@ -532,8 +556,7 @@ class App(_BASE_CLASS):
         messagebox.showinfo(
             "关于",
             f"音频转文字\n\n"
-            f"识别模型：SenseVoice\n"
-            f"支持语言：中文 / 英文 / 日文 / 韩文 / 粤语\n\n"
+            f"支持：中文 / 英文 / 日文 / 韩文 / 粤语\n\n"
             f"授权状态：{status}",
         )
 

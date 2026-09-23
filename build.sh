@@ -41,6 +41,7 @@ build_mac() {
         --nofollow-import-to=tkinterdnd2 \
         --include-module=av \
         --include-data-dir=models=models \
+        --include-data-dir=icons=icons \
         --output-dir="${OUTPUT_DIR}" \
         --output-filename="${APP_NAME}" \
         --company-name="ASR" \
@@ -51,7 +52,7 @@ build_mac() {
         --macos-create-app-bundle \
         --macos-app-name="${APP_NAME}" \
         --macos-app-version=${VERSION} \
-        --macos-app-icon=none \
+        --macos-app-icon=icons/icon.icns \
         --static-libpython=no \
         --assume-yes-for-downloads \
         --show-progress \
@@ -84,6 +85,7 @@ build_windows() {
         --nofollow-import-to=tkinterdnd2 \
         --include-module=av \
         --include-data-dir=models=models \
+        --include-data-dir=icons=icons \
         --output-dir="${OUTPUT_DIR}" \
         --output-filename="${APP_NAME}.exe" \
         --company-name="ASR" \
@@ -92,7 +94,7 @@ build_windows() {
         --file-version=${VERSION} \
         --product-version=${VERSION} \
         --windows-disable-console \
-        --windows-icon-from-ico=none \
+        --windows-icon-from-ico=icons/icon.ico \
         --assume-yes-for-downloads \
         --show-progress \
         --show-memory \
