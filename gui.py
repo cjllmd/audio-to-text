@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 import tkinter as tk
+import threading
 from tkinter import filedialog, messagebox, ttk
 
 try:
@@ -413,6 +414,16 @@ class App(_BASE_CLASS):
         )
         self._vad_cb.pack(side="left", padx=(16, 0))
 
+        self.correct_var = tk.BooleanVar(value=False)
+        self._correct_cb = tk.Checkbutton(
+            bar, text="智能纠错", variable=self.correct_var,
+            bg=_CARD, fg=_TEXT, selectcolor=_CARD,
+            activebackground=_CARD, activeforeground=_ACCENT,
+            font=("PingFang SC", 10), cursor="hand2",
+        )
+        self._correct_cb.pack(side="left", padx=(8, 0))
+        self._init_correct_checkbox()
+
         tk.Label(
             self, text='提示：电话录音有多个人说话，请勾选"区分说话人"',
             bg=_BG, fg=_TEXT_MUTED,
@@ -517,6 +528,18 @@ class App(_BASE_CLASS):
             self.num_speakers_combo.config(state="readonly")
         else:
             self.num_speakers_combo.config(state="disabled")
+
+    def _init_correct_checkbox(self):
+        try:
+            from corrector import is_available
+            if not is_available():
+                self._correct_cb.config(state="disabled")
+                self._correct_cb.config(cursor="")
+                self.correct_var.set(False)
+        except ImportError:
+            self._correct_cb.config(state="disabled")
+            self._correct_cb.config(cursor="")
+            self.correct_var.set(False)
 
     def _check_license(self) -> bool:
         ok, msg = check_trial_or_registered()
@@ -745,9 +768,37 @@ class App(_BASE_CLASS):
         self._elapsed_label.config(text=f"{elapsed:.1f}s")
         self.result_text.delete("1.0", "end")
         if text:
-            self.result_text.insert("end", text)
+            if self.correct_var.get():
+                self.result_text.insert("end", text)
+                self._status_label.config(text="纠错中...", foreground=_ACCENT)
+                self._correct_queue = []
+                self._correct_src = text
+                t = threading.Thread(target=self._correct_worker, args=(text,), daemon=True)
+                t.start()
+                self.after(100, self._correct_poll)
+            else:
+                self.result_text.insert("end", text)
         else:
             self.result_text.insert("end", "(识别完成，但未检测到语音内容)")
+
+    def _correct_worker(self, text):
+        try:
+            from corrector import correct_text
+            corrected = correct_text(text)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            corrected = text
+        self._correct_queue.append(corrected)
+
+    def _correct_poll(self):
+        if self._correct_queue:
+            corrected = self._correct_queue.pop(0)
+            self._status_label.config(text="")
+            self.result_text.delete("1.0", "end")
+            self.result_text.insert("end", corrected)
+            return
+        self.after(100, self._correct_poll)
 
     def _show_error(self, msg):
         self._set_ui_busy(False)
