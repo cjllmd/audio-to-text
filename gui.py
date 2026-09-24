@@ -5,7 +5,6 @@ import subprocess
 import sys
 import time
 import tkinter as tk
-import threading
 from tkinter import filedialog, messagebox, ttk
 
 try:
@@ -771,34 +770,52 @@ class App(_BASE_CLASS):
             if self.correct_var.get():
                 self.result_text.insert("end", text)
                 self._status_label.config(text="纠错中...", foreground=_ACCENT)
-                self._correct_queue = []
-                self._correct_src = text
-                t = threading.Thread(target=self._correct_worker, args=(text,), daemon=True)
-                t.start()
-                self.after(100, self._correct_poll)
+                self._correct_proc = None
+                self._start_correction(text)
             else:
                 self.result_text.insert("end", text)
         else:
             self.result_text.insert("end", "(识别完成，但未检测到语音内容)")
 
-    def _correct_worker(self, text):
+    def _start_correction(self, text):
         try:
-            from corrector import correct_text
-            corrected = correct_text(text)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            corrected = text
-        self._correct_queue.append(corrected)
-
-    def _correct_poll(self):
-        if self._correct_queue:
-            corrected = self._correct_queue.pop(0)
+            script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corrector.py")
+            self._correct_proc = subprocess.Popen(
+                [sys.executable, script, "--json-output"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self._correct_proc.stdin.write(text.encode("utf-8"))
+            self._correct_proc.stdin.close()
+        except Exception:
             self._status_label.config(text="")
-            self.result_text.delete("1.0", "end")
-            self.result_text.insert("end", corrected)
             return
-        self.after(100, self._correct_poll)
+        self.after(200, self._poll_correction)
+
+    def _poll_correction(self):
+        proc = getattr(self, "_correct_proc", None)
+        if proc is None:
+            return
+        ret = proc.poll()
+        if ret is not None:
+            stdout = proc.stdout.read().decode("utf-8", errors="replace").strip()
+            if ret == 0 and stdout:
+                try:
+                    import json as _json
+                    data = _json.loads(stdout)
+                    corrected = data.get("text", "")
+                except Exception:
+                    corrected = stdout
+            else:
+                corrected = ""
+            self._status_label.config(text="")
+            if corrected:
+                self.result_text.delete("1.0", "end")
+                self.result_text.insert("end", corrected)
+            self._correct_proc = None
+            return
+        self.after(200, self._poll_correction)
 
     def _show_error(self, msg):
         self._set_ui_busy(False)
