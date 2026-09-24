@@ -4,15 +4,9 @@
 #   1. 推送版本标签时自动构建（git tag v1.0.0 && git push --tags）
 #   2. 手动触发（GitHub 页面点击 "Run workflow"）
 #
-# 构建产物：
+# 构建产物发布到 GitHub Release：
 #   - macOS ARM64 (.app 压缩包)
 #   - Windows x86_64 (目录压缩包)
-#   Intel Mac 在本机构建（见 build.sh）
-#
-# 模型说明：
-#   大模型（model.int8.onnx）在 CI 中从 GitHub Releases 动态下载，
-#   未放入 Git 仓库（超出 100MB 限制）。本地首次使用也需运行:
-#     bash download_model.sh
 
 name: Build
 
@@ -30,9 +24,6 @@ env:
   PYTHON_VERSION: '3.12'
 
 jobs:
-  # ═══════════════════════════════════════════════
-  # macOS ARM64
-  # ═══════════════════════════════════════════════
   macos-arm64:
     name: macOS ARM64
     runs-on: macos-latest
@@ -48,7 +39,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: '**/requirements.txt'
 
-      - name: 安装 ccache（加速 Nuitka 重复构建）
+      - name: 安装 ccache
         run: brew install ccache
 
       - name: 安装 Python 依赖
@@ -109,18 +100,14 @@ jobs:
           cd dist
           zip -ry "音频转文字-macOS-ARM64-${VERSION}.zip" "音频转文字-macOS-ARM64-${VERSION}.app"
           rm -rf "音频转文字-macOS-ARM64-${VERSION}.app"
-          echo "ARTIFACT=音频转文字-macOS-ARM64-${VERSION}.zip" >> $GITHUB_ENV
 
-      - name: 上传产物
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: 音频转文字-macOS-ARM64
+          name: macos-arm64-build
           path: dist/*.zip
-          retention-days: 30
+          retention-days: 1
 
-  # ═══════════════════════════════════════════════
-  # Windows x86_64
-  # ═══════════════════════════════════════════════
   windows:
     name: Windows x86_64
     runs-on: windows-latest
@@ -200,9 +187,64 @@ jobs:
             Remove-Item -Recurse -Force $dst
           }
 
-      - name: 上传产物
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: 音频转文字-Windows
+          name: windows-build
           path: dist/*.zip
-          retention-days: 30
+          retention-days: 1
+
+  release:
+    name: 发布 Release
+    needs: [macos-arm64, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 确定版本号
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            VERSION="1.0.0"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: 下载 macOS 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64-build
+          path: release/
+
+      - name: 下载 Windows 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: release/
+
+      - name: 列出产物
+        run: ls -lh release/
+
+      - name: 创建 Release 并上传
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body: |
+            音频转文字 v${{ steps.version.outputs.version }}
+
+            ## 下载
+            - **macOS ARM64**: `音频转文字-macOS-ARM64-${{ steps.version.outputs.version }}.zip`
+            - **Windows x86_64**: `音频转文字-Windows-${{ steps.version.outputs.version }}.zip`
+
+            ## 使用说明
+            1. 下载对应平台的压缩包
+            2. macOS: 解压后双击 .app 运行，首次可能需要在"系统设置 > 隐私与安全性"中允许
+            3. Windows: 解压后运行 `音频转文字.exe`
+          files: release/*.zip
+          draft: false
+          prerelease: false
