@@ -1,5 +1,4 @@
 import os
-import sys
 import wave
 import argparse
 import subprocess
@@ -20,12 +19,7 @@ def _cache_key(model: str, language: str, num_threads: int) -> str:
     return f"{model}|{language}|{num_threads}"
 
 
-def _base_dir():
-    if getattr(sys, 'frozen', False):
-        return sys._MEIPASS
-    return os.path.dirname(os.path.abspath(__file__))
-
-MODELS_DIR = os.path.join(_base_dir(), "models")
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
 MODEL_INFO = {
     "sensevoice": {

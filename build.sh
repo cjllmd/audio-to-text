@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 音频转文字 PyInstaller 打包脚本
+# 音频转文字 Nuitka 打包脚本
 #
 # 支持平台（需在对应平台上运行）：
 #   ./build.sh mac     — 当前 Mac（Intel 或 Apple Silicon 自动检测）
@@ -18,7 +18,6 @@ cd "$SCRIPT_DIR"
 APP_NAME="音频转文字"
 MAIN_MODULE="gui.py"
 OUTPUT_DIR="dist"
-BUILD_DIR="build"
 VERSION="1.0.0"
 
 detect_mac_arch() {
@@ -33,30 +32,38 @@ build_mac() {
     local arch
     arch=$(detect_mac_arch)
     echo "=========================================="
-    echo "  Building for macOS ($arch) with PyInstaller"
+    echo "  Building for macOS ($arch)"
     echo "=========================================="
 
-    pyinstaller \
-        --name "${APP_NAME}" \
-        --windowed \
-        --icon icons/icon.icns \
-        --add-data "models/silero_vad.onnx:models" \
-        --add-data "models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx:models" \
-        --add-data "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx:models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" \
-        --add-data "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt:models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" \
-        --add-data "models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx:models/sherpa-onnx-pyannote-segmentation-3-0" \
-        --add-data "icons:icons" \
-        --hidden-import av \
-        --hidden-import av._core \
-        --hidden-import sherpa_onnx \
-        --hidden-import soundfile \
-        --hidden-import scipy._lib._ccallback \
-        --distpath "${OUTPUT_DIR}" \
-        --workpath "${BUILD_DIR}" \
-        --noconfirm \
+    python3 -m nuitka \
+        --standalone \
+        --enable-plugin=tk-inter \
+        --nofollow-import-to=tkinterdnd2 \
+        --include-module=av \
+        --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx \
+        --include-data-files=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx \
+        --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx \
+        --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
+        --include-data-files=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx \
+        --include-data-dir=icons=icons \
+        --output-dir="${OUTPUT_DIR}" \
+        --output-filename="${APP_NAME}" \
+        --company-name="ASR" \
+        --product-name="${APP_NAME}" \
+        --file-description="音频转文字工具" \
+        --file-version=${VERSION} \
+        --product-version=${VERSION} \
+        --macos-create-app-bundle \
+        --macos-app-name="${APP_NAME}" \
+        --macos-app-version=${VERSION} \
+        --macos-app-icon=icons/icon.icns \
+        --static-libpython=no \
+        --assume-yes-for-downloads \
+        --show-progress \
+        --show-memory \
         ${MAIN_MODULE}
 
-    local app_bundle="${OUTPUT_DIR}/${APP_NAME}.app"
+    local app_bundle="${OUTPUT_DIR}/${MAIN_MODULE}.app"
     local final_name="${OUTPUT_DIR}/${APP_NAME}-macos-${arch}.app"
     if [[ -d "${app_bundle}" ]]; then
         if [[ -d "${final_name}" ]]; then
@@ -68,7 +75,7 @@ build_mac() {
         echo "  Size: $(du -sh "${final_name}" | cut -f1)"
     fi
 
-    rm -rf "${BUILD_DIR}" "${OUTPUT_DIR}/${APP_NAME}.spec"
+    rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.build" "${OUTPUT_DIR}/${MAIN_MODULE}.dist"
 
     create_dmg "${final_name}" "${arch}"
 }
@@ -139,30 +146,35 @@ create_dmg() {
 
 build_windows() {
     echo "=========================================="
-    echo "  Building for Windows with PyInstaller"
+    echo "  Building for Windows"
     echo "=========================================="
 
-    pyinstaller \
-        --name "${APP_NAME}" \
-        --windowed \
-        --icon icons/icon.ico \
-        --add-data "models/silero_vad.onnx;models" \
-        --add-data "models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx;models" \
-        --add-data "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx;models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" \
-        --add-data "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt;models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" \
-        --add-data "models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx;models/sherpa-onnx-pyannote-segmentation-3-0" \
-        --add-data "icons;icons" \
-        --hidden-import av \
-        --hidden-import av._core \
-        --hidden-import sherpa_onnx \
-        --hidden-import soundfile \
-        --hidden-import scipy._lib._ccallback \
-        --distpath "${OUTPUT_DIR}" \
-        --workpath "${BUILD_DIR}" \
-        --noconfirm \
+    python -m nuitka \
+        --standalone \
+        --enable-plugin=tk-inter \
+        --nofollow-import-to=tkinterdnd2 \
+        --include-module=av \
+        --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx \
+        --include-data-files=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx \
+        --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx \
+        --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
+        --include-data-files=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx \
+        --include-data-dir=icons=icons \
+        --output-dir="${OUTPUT_DIR}" \
+        --output-filename="${APP_NAME}.exe" \
+        --company-name="ASR" \
+        --product-name="${APP_NAME}" \
+        --file-description="音频转文字工具" \
+        --file-version=${VERSION} \
+        --product-version=${VERSION} \
+        --windows-disable-console \
+        --windows-icon-from-ico=icons/icon.ico \
+        --assume-yes-for-downloads \
+        --show-progress \
+        --show-memory \
         ${MAIN_MODULE}
 
-    local bundle_dir="${OUTPUT_DIR}/${APP_NAME}"
+    local bundle_dir="${OUTPUT_DIR}/${MAIN_MODULE}.dist"
     local final_dir="${OUTPUT_DIR}/${APP_NAME}-windows"
     if [[ -d "${bundle_dir}" ]]; then
         if [[ -d "${final_dir}" ]]; then
@@ -174,15 +186,16 @@ build_windows() {
         echo "  Size: $(du -sh "${final_dir}" | cut -f1)"
     fi
 
-    rm -rf "${BUILD_DIR}" "${OUTPUT_DIR}/${APP_NAME}.spec"
+    rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.build"
 }
 
 clean() {
     echo "Cleaning build artifacts..."
-    rm -rf "${BUILD_DIR}"
-    rm -rf "${OUTPUT_DIR}/${APP_NAME}.spec"
-    rm -f "${OUTPUT_DIR}/tmp_dmg.raw"
+    rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.build"
+    rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.dist"
+    rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.app"
     rm -f "${OUTPUT_DIR}/${APP_NAME}-macos-*.dmg"
+    rm -f "${OUTPUT_DIR}/tmp_dmg.raw"
     echo "Done."
 }
 
