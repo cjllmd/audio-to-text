@@ -418,6 +418,12 @@ class App(_BASE_CLASS):
         )
         self._vad_cb.pack(side="left", padx=(16, 0))
 
+        tk.Label(
+            self, text='提示：电话录音有多个人说话，请勾选"区分说话人"',
+            bg=_BG, fg=_TEXT_MUTED,
+            font=("PingFang SC", 8),
+        ).pack(anchor="w", padx=36, pady=(0, 4))
+
     def _build_actions(self):
         frame = ttk.Frame(self, padding=(16, 12))
         frame.pack(fill="x")
