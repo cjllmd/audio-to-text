@@ -26,6 +26,11 @@ from license import (
     verify_license,
 )
 
+def _base_dir():
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
 _BASE_CLASS = tkinterdnd2.TkinterDnD.Tk if _HAS_DND else tk.Tk
 
 _BG = "#f5f6fa"
@@ -276,7 +281,7 @@ class App(_BASE_CLASS):
         self.config(menu=menubar)
 
     def _set_icon(self):
-        icon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
+        icon_dir = os.path.join(_base_dir(), "icons")
         if sys.platform == "darwin":
             icns = os.path.join(icon_dir, "icon.icns")
             if os.path.exists(icns):
@@ -622,25 +627,10 @@ class App(_BASE_CLASS):
         self.result_text.delete("1.0", "end")
         self.result_text.insert("end", "识别中...\n")
 
-        try:
-            _is_compiled = bool(__compiled__)
-        except NameError:
-            _is_compiled = False
+        _is_frozen = getattr(sys, 'frozen', False)
 
-        if _is_compiled:
-            # Nuitka 编译模式: sys.executable 可能指向不存在的 python3
-            # 需要找到真正的编译二进制
-            real_exe = sys.executable
-            if not os.path.exists(real_exe):
-                exe_dir = os.path.dirname(os.path.abspath(real_exe))
-                for f in os.listdir(exe_dir):
-                    p = os.path.join(exe_dir, f)
-                    if (os.path.isfile(p) and os.access(p, os.X_OK)
-                            and not f.endswith('.so') and not f.endswith('.dylib')
-                            and f != 'python3'):
-                        real_exe = p
-                        break
-            cmd = [real_exe, "--asr-worker", audio_path,
+        if _is_frozen:
+            cmd = [sys.executable, "--asr-worker", audio_path,
                    "--model", model, "--language", language,
                    "--threads", "0", "--json-output"]
         else:

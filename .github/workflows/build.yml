@@ -28,7 +28,7 @@ jobs:
   macos-arm64:
     name: macOS ARM64
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -40,13 +40,10 @@ jobs:
           cache: 'pip'
           cache-dependency-path: '**/requirements.txt'
 
-      - name: 安装 ccache
-        run: brew install ccache
-
       - name: 安装 Python 依赖
         run: |
           python3 -m pip install --upgrade pip wheel setuptools
-          pip install nuitka
+          pip install pyinstaller
           pip install -r requirements.txt
 
       - name: 下载模型文件
@@ -55,7 +52,7 @@ jobs:
           echo "模型文件:"
           find models -type f \( -name "*.onnx" -o -name "*.txt" \) | sort
 
-      - name: Nuitka 编译
+      - name: PyInstaller 打包
         run: |
           VERSION="${{ github.event.inputs.version }}"
           if [ -z "$VERSION" ]; then
@@ -66,38 +63,30 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-          python3 -m nuitka \
-            --standalone \
-            --enable-plugin=tk-inter \
-            --nofollow-import-to=tkinterdnd2 \
-            --include-module=av \
-            --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx \
-            --include-data-files=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx \
-            --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx \
-            --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
-            --include-data-files=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx \
-            --include-data-dir=icons=icons \
-            --output-dir=dist \
-            --output-filename="音频转文字" \
-            --company-name="ASR" \
-            --product-name="音频转文字" \
-            --file-description="音频转文字工具" \
-            --file-version="${VERSION}" \
-            --product-version="${VERSION}" \
-            --macos-create-app-bundle \
-            --macos-app-name="音频转文字" \
-            --macos-app-version="${VERSION}" \
-            --macos-app-icon=icons/icon.icns \
-            --static-libpython=no \
-            --assume-yes-for-downloads \
-            --show-progress \
-            --show-memory \
+          pyinstaller \
+            --name "音频转文字" \
+            --windowed \
+            --icon icons/icon.icns \
+            --add-data "models/silero_vad.onnx:models" \
+            --add-data "models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx:models" \
+            --add-data "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx:models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" \
+            --add-data "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt:models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" \
+            --add-data "models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx:models/sherpa-onnx-pyannote-segmentation-3-0" \
+            --add-data "icons:icons" \
+            --hidden-import av \
+            --hidden-import av._core \
+            --hidden-import sherpa_onnx \
+            --hidden-import soundfile \
+            --hidden-import scipy._lib._ccallback \
+            --distpath dist \
+            --workpath build \
+            --noconfirm \
             gui.py
 
       - name: 压缩产物
         run: |
           VERSION="${{ env.VERSION }}"
-          mv dist/gui.app "dist/音频转文字-macOS-ARM64-${VERSION}.app"
+          mv "dist/音频转文字.app" "dist/音频转文字-macOS-ARM64-${VERSION}.app"
           cd dist
           zip -ry "音频转文字-macOS-ARM64-${VERSION}.zip" "音频转文字-macOS-ARM64-${VERSION}.app"
 
@@ -124,7 +113,7 @@ jobs:
   windows:
     name: Windows x86_64
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -140,7 +129,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip wheel setuptools
-          pip install nuitka
+          pip install pyinstaller
           pip install -r requirements.txt
 
       - name: 下载模型文件
@@ -153,46 +142,39 @@ jobs:
           }
           Get-ChildItem -Recurse -Path models -Include *.onnx, *.txt | Select-Object Name | Format-Table
 
-      - name: Nuitka 编译
+      - name: PyInstaller 打包
         shell: pwsh
-        env:
-          NUITKA_CACHE_DIR: ${{ runner.temp }}/nuitka-cache
         run: |
           $version = "${{ github.event.inputs.version }}"
           if (-not $version) { $version = "$env:GITHUB_REF_NAME".TrimStart("v") }
           if ($version -notmatch '^\d+\.\d+\.\d+') { $version = "1.0.0" }
           echo "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-          python -m nuitka `
-            --standalone `
-            --enable-plugin=tk-inter `
-            --nofollow-import-to=tkinterdnd2 `
-            --include-module=av `
-            --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx `
-            --include-data-files=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx `
-            --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx `
-            --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt `
-            --include-data-files=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx `
-            --include-data-dir=icons=icons `
-            --output-dir=dist `
-            --output-filename="音频转文字.exe" `
-            --company-name="ASR" `
-            --product-name="音频转文字" `
-            --file-description="音频转文字工具" `
-            --file-version=$version `
-            --product-version=$version `
-            --windows-disable-console `
-            --windows-icon-from-ico=icons/icon.ico `
-            --assume-yes-for-downloads `
-            --show-progress `
-            --show-memory `
+          pyinstaller `
+            --name "音频转文字" `
+            --windowed `
+            --icon icons/icon.ico `
+            --add-data "models/silero_vad.onnx;models" `
+            --add-data "models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx;models" `
+            --add-data "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx;models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" `
+            --add-data "models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt;models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17" `
+            --add-data "models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx;models/sherpa-onnx-pyannote-segmentation-3-0" `
+            --add-data "icons;icons" `
+            --hidden-import av `
+            --hidden-import av._core `
+            --hidden-import sherpa_onnx `
+            --hidden-import soundfile `
+            --hidden-import scipy._lib._ccallback `
+            --distpath dist `
+            --workpath build `
+            --noconfirm `
             gui.py
 
       - name: 压缩产物
         shell: pwsh
         run: |
           $version = "$env:VERSION"
-          $src = "dist\gui.dist"
+          $src = "dist\音频转文字"
           $dst = "dist\音频转文字-Windows-${version}"
           if (Test-Path $src) {
             Move-Item -Path $src -Destination $dst
