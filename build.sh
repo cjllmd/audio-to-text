@@ -7,8 +7,7 @@
 #   ./build.sh clean   — 清理构建产物
 #
 # 输出：
-#   dist/音频转文字-macos-x86_64.app   (Mac Intel)
-#   dist/音频转文字-macos-arm64.app    (Mac Apple Silicon)
+#   dist/音频转文字.app                (Mac Intel / Apple Silicon)
 #   dist/音频转文字-windows/            (Windows)
 set -euo pipefail
 
@@ -64,7 +63,7 @@ build_mac() {
         ${MAIN_MODULE}
 
     local app_bundle="${OUTPUT_DIR}/${MAIN_MODULE}.app"
-    local final_name="${OUTPUT_DIR}/${APP_NAME}-macos-${arch}.app"
+    local final_name="${OUTPUT_DIR}/${APP_NAME}.app"
     if [[ -d "${app_bundle}" ]]; then
         if [[ -d "${final_name}" ]]; then
             rm -rf "${final_name}"
@@ -193,7 +192,7 @@ clean() {
     echo "Cleaning build artifacts..."
     rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.build"
     rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.dist"
-    rm -rf "${OUTPUT_DIR}/${MAIN_MODULE}.app"
+    rm -rf "${OUTPUT_DIR}/${APP_NAME}.app"
     rm -f "${OUTPUT_DIR}/${APP_NAME}-macos-*.dmg"
     rm -f "${OUTPUT_DIR}/tmp_dmg.raw"
     echo "Done."
