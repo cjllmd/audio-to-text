@@ -316,16 +316,16 @@ def _convert_via_av(input_path: str, wav_path: str) -> str:
         for frame in inp.decode(stream):
             try:
                 for r in resampler.resample(frame):
-                    chunks.append(r.to_ndarray())
+                    chunks.append(r.to_ndarray().ravel())
             except Exception:
                 continue
         for r in resampler.resample(None):
-            chunks.append(r.to_ndarray())
+            chunks.append(r.to_ndarray().ravel())
     finally:
         inp.close()
     if not chunks:
         raise RuntimeError("PyAV 解码无音频数据")
-    audio = np.concatenate(chunks).flatten().astype(np.int16)
+    audio = np.concatenate(chunks).astype(np.int16)
     import soundfile as sf
     sf.write(wav_path, audio, 16000, subtype="PCM_16")
     return wav_path
