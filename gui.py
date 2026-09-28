@@ -15,7 +15,6 @@ except ImportError:
 
 from license import (
     TRIAL_MAX,
-    check_auth,
     check_trial_or_registered,
     current_registration,
     increment_trial,
@@ -553,9 +552,6 @@ class App(_BASE_CLASS):
             return is_registered()
         if is_registered():
             return True
-        if not check_auth():
-            messagebox.showwarning("授权校验", "授权验证异常，请重新注册。")
-            return False
         used = trial_count()
         remaining = increment_trial()
         messagebox.showinfo(
