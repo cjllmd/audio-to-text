@@ -306,15 +306,23 @@ def transcribe_file(
 def _convert_via_av(input_path: str, wav_path: str) -> str:
     import av
     inp = av.open(input_path)
-    stream = next(s for s in inp.streams if s.type == "audio")
-    resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
-    chunks = []
-    for frame in inp.decode(stream):
-        for r in resampler.resample(frame):
+    try:
+        audio_streams = [s for s in inp.streams if s.type == "audio"]
+        if not audio_streams:
+            raise RuntimeError("文件中未找到音频轨道")
+        stream = audio_streams[0]
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+        chunks = []
+        for frame in inp.decode(stream):
+            try:
+                for r in resampler.resample(frame):
+                    chunks.append(r.to_ndarray())
+            except Exception:
+                continue
+        for r in resampler.resample(None):
             chunks.append(r.to_ndarray())
-    for r in resampler.resample(None):
-        chunks.append(r.to_ndarray())
-    inp.close()
+    finally:
+        inp.close()
     if not chunks:
         raise RuntimeError("PyAV 解码无音频数据")
     audio = np.concatenate(chunks).flatten().astype(np.int16)
@@ -327,12 +335,15 @@ def convert_to_wav(input_path: str) -> str:
     if input_path.lower().endswith(".wav"):
         return input_path
     wav_path = os.path.splitext(input_path)[0] + "_temp.wav"
+    errors = []
+
     try:
         return _convert_via_av(input_path, wav_path)
-    except ImportError:
-        pass
-    except Exception:
-        pass
+    except ImportError as e:
+        errors.append(f"PyAV 未安装: {e}")
+    except Exception as e:
+        errors.append(f"PyAV 转换失败: {e}")
+
     try:
         subprocess.run(
             [
@@ -348,14 +359,24 @@ def convert_to_wav(input_path: str) -> str:
         )
         return wav_path
     except FileNotFoundError:
-        pass
+        errors.append("ffmpeg 未安装")
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"ffmpeg 转换失败: {e.stderr.decode(errors='replace') if e.stderr else e}")
+
     try:
         import soundfile as sf
     except ImportError:
-        raise ImportError("非 WAV 格式需要 av、ffmpeg 或 soundfile，请安装其一")
-    data, sr = sf.read(input_path, dtype="float32")
+        raise ImportError(
+            f"无法处理此音频格式（{os.path.splitext(input_path)[1]}），请安装 av、ffmpeg 或 soundfile。\n"
+            f"错误详情: {'; '.join(errors)}"
+        )
+    try:
+        data, sr = sf.read(input_path, dtype="float32")
+    except Exception as e:
+        raise RuntimeError(
+            f"无法打开音频文件（{os.path.splitext(input_path)[1]} 格式）: {e}\n"
+            f"已尝试: {'; '.join(errors)}"
+        )
     if data.ndim > 1:
         data = data[:, 0]
     if sr != 16000:
