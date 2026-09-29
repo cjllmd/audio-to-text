@@ -661,6 +661,7 @@ class App(_BASE_CLASS):
                     p = os.path.join(exe_dir, f)
                     if (os.path.isfile(p) and os.access(p, os.X_OK)
                             and not f.endswith('.so') and not f.endswith('.dylib')
+                            and not f.endswith('.dll') and not f.endswith('.pyd')
                             and f != 'python3'):
                         real_exe = p
                         break
