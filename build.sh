@@ -17,7 +17,7 @@ cd "$SCRIPT_DIR"
 APP_NAME="音频转文字"
 MAIN_MODULE="gui.py"
 OUTPUT_DIR="dist"
-VERSION="1.0.0"
+VERSION="1.8.6"
 
 detect_mac_arch() {
     if [[ "$(uname -m)" == "arm64" ]]; then

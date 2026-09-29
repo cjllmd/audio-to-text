@@ -64,7 +64,7 @@ jobs:
             VERSION="${GITHUB_REF_NAME#v}"
           fi
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
-            VERSION="1.0.0"
+            VERSION="1.8.6"
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
@@ -169,7 +169,7 @@ jobs:
         run: |
           $version = "${{ github.event.inputs.version }}"
           if (-not $version) { $version = "$env:GITHUB_REF_NAME".TrimStart("v") }
-          if ($version -notmatch '^\d+\.\d+\.\d+') { $version = "1.0.0" }
+          if ($version -notmatch '^\d+\.\d+\.\d+') { $version = "1.8.6" }
           echo "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
 
           python -m nuitka `
