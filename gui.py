@@ -669,9 +669,9 @@ class App(_BASE_CLASS):
                    "--threads", "0", "--json-output"]
         else:
             asr_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr.py")
-            cmd = [sys.executable, asr_script, audio_path,
-                   "--model", model, "--language", language,
-                   "--threads", "0", "--json-output"]
+            cmd = [sys.executable, "-u", asr_script, audio_path,
+               "--model", model, "--language", language,
+               "--threads", "0", "--json-output"]
         if not use_vad:
             cmd.append("--no-vad")
         if use_diarize:
