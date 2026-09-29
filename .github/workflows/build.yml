@@ -32,6 +32,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: 设置 Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
@@ -133,6 +135,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: 设置 Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
