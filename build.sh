@@ -39,6 +39,7 @@ build_mac() {
         --enable-plugin=tk-inter \
         --nofollow-import-to=tkinterdnd2 \
         --include-module=av \
+        --follow-import-to=av \
         --include-module=corrector \
         --include-module=tokenizers \
         --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx \
@@ -158,6 +159,7 @@ build_windows() {
         --enable-plugin=tk-inter \
         --nofollow-import-to=tkinterdnd2 \
         --include-module=av \
+        --follow-import-to=av \
         --include-module=corrector \
         --include-module=tokenizers \
         --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx \
