@@ -18,8 +18,10 @@ import os
 import struct
 import subprocess
 import sys
+import threading
 import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REG_FILE = Path.home() / ".asr_license.json"
@@ -251,26 +253,31 @@ def _windows_hw() -> list[str]:
     except Exception:
         pass
     import re
-    for cmd, label in (
-        (["powershell", "-NoProfile", "-NonInteractive", "-Command",
-          "Get-WmiObject Win32_DiskDrive | Select-Object -ExpandProperty SerialNumber"], "disk"),
-        (["powershell", "-NoProfile", "-NonInteractive", "-Command",
-          "Get-WmiObject Win32_BIOS | Select-Object -ExpandProperty SerialNumber"], "bios"),
-        (["powershell", "-NoProfile", "-NonInteractive", "-Command",
-          "Get-WmiObject Win32_Processor | Select-Object -ExpandProperty ProcessorId"], "cpu"),
-    ):
+
+    def _query(label: str, cmd: list[str]):
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=6,
                                creationflags=subprocess.CREATE_NO_WINDOW)
             val = r.stdout.strip()
             if val and not re.fullmatch(r"[\s_]+", val):
                 out.append(f"{label}:{val}")
         except Exception:
             pass
+
+    cmds = (
+        ("disk", ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+          "Get-WmiObject Win32_DiskDrive | Select-Object -ExpandProperty SerialNumber"]),
+        ("bios", ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+          "Get-WmiObject Win32_BIOS | Select-Object -ExpandProperty SerialNumber"]),
+        ("cpu", ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+          "Get-WmiObject Win32_Processor | Select-Object -ExpandProperty ProcessorId"]),
+    )
+    with ThreadPoolExecutor(max_workers=len(cmds)) as ex:
+        list(ex.map(lambda c: _query(c[0], c[1]), cmds))
     return out
 
 
-def machine_code() -> str:
+def _compute_machine_code() -> str:
     if sys.platform == "win32":
         parts = _windows_hw() + _mac_addresses()
     else:
@@ -285,6 +292,31 @@ def machine_code() -> str:
         code.append(alphabet[num % len(alphabet)])
         num //= len(alphabet)
     return "".join(reversed(code))
+
+
+# 机器码缓存：只在后台线程计算一次，避免在 GUI 主线程上同步运行慢速的
+# PowerShell 子进程导致界面卡死（未响应）。
+_machine_code_cache: str | None = None
+_machine_code_err: BaseException | None = None
+_machine_code_done = threading.Event()
+
+
+def _warm_machine_code():
+    global _machine_code_cache, _machine_code_err
+    try:
+        _machine_code_cache = _compute_machine_code()
+    except BaseException as e:  # noqa: BLE001
+        _machine_code_err = e
+    finally:
+        _machine_code_done.set()
+
+
+def machine_code() -> str:
+    _machine_code_done.wait()
+    if _machine_code_err is not None:
+        raise _machine_code_err
+    assert _machine_code_cache is not None
+    return _machine_code_cache
 
 
 def _b64encode(data: bytes) -> str:
@@ -658,3 +690,9 @@ def check_trial_or_registered() -> tuple[bool, str]:
     if used < TRIAL_MAX:
         return True, ""
     return False, "试用次数已用完，请注册"
+
+
+# 模块加载时在后台线程预热机器码，避免用户点击注册/开始识别时，
+# 主线程才去同步运行慢速的 PowerShell 子进程而卡死界面。
+_warm_thread = threading.Thread(target=_warm_machine_code, name="asr-machine-code-warm", daemon=True)
+_warm_thread.start()
