@@ -160,6 +160,8 @@ build_windows() {
         --nofollow-import-to=tkinterdnd2 \
         --include-module=av \
         --follow-import-to=av \
+        --include-module=av._cyutil \
+        --include-module=av._avgo \
         --include-module=corrector \
         --include-module=tokenizers \
         --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx \
