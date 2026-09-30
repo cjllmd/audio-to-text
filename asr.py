@@ -341,6 +341,8 @@ def convert_to_wav(input_path: str) -> str:
         return _convert_via_av(input_path, wav_path)
     except ImportError as e:
         errors.append(f"PyAV 未安装: {e}")
+    except ModuleNotFoundError:
+        errors.append("PyAV 组件不完整，请重新安装 av 包")
     except Exception as e:
         errors.append(f"PyAV 转换失败: {e}")
 
