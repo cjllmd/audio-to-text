@@ -72,6 +72,12 @@ jobs:
             --standalone \
             --enable-plugin=tk-inter \
             --nofollow-import-to=tkinterdnd2 \
+            --nofollow-import-to=av.video \
+            --nofollow-import-to=av.subtitles \
+            --nofollow-import-to=av.filter \
+            --nofollow-import-to=av.device \
+            --nofollow-import-to=av.datasets \
+            --nofollow-import-to=av.bitstream \
             --include-module=av \
             --follow-import-to=av \
             --include-module=corrector \
@@ -177,6 +183,12 @@ jobs:
             --standalone `
             --enable-plugin=tk-inter `
             --nofollow-import-to=tkinterdnd2 `
+            --nofollow-import-to=av.video `
+            --nofollow-import-to=av.subtitles `
+            --nofollow-import-to=av.filter `
+            --nofollow-import-to=av.device `
+            --nofollow-import-to=av.datasets `
+            --nofollow-import-to=av.bitstream `
             --include-module=av `
             --follow-import-to=av `
             --include-module=corrector `
