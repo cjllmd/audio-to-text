@@ -753,7 +753,6 @@ class App(_BASE_CLASS):
         self.after(80, self._poll_proc)
 
     def _handle_proc_result(self):
-        proc = self._proc
         self._proc = None
 
         if self._proc_stdout_thread is not None:
@@ -762,14 +761,6 @@ class App(_BASE_CLASS):
         if self._proc_stderr_thread is not None:
             self._proc_stderr_thread.join(timeout=2)
             self._proc_stderr_thread = None
-
-        try:
-            proc_stdout, proc_stderr = proc.communicate(timeout=5)
-            with self._proc_lock:
-                self._proc_stdout += proc_stdout
-                self._proc_stderr += proc_stderr
-        except Exception:
-            pass
 
         output = self._proc_stdout.decode("utf-8", errors="replace").strip()
         if output:
