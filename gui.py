@@ -252,6 +252,7 @@ class App(_BASE_CLASS):
         self._set_icon()
         self._proc_start = 0.0
         self._work_thread = None
+        self._worker_proc = None
         self._correct_thread = None
         self._is_compiled = getattr(sys, "frozen", False)
         try:
@@ -618,6 +619,12 @@ class App(_BASE_CLASS):
 
     def _cancel(self):
         self._cancel_requested = True
+        proc = self._worker_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
         self._set_ui_busy(False)
         self._elapsed_label.config(text="")
         self.result_text.delete("1.0", "end")
@@ -647,38 +654,73 @@ class App(_BASE_CLASS):
         self._cancel_requested = False
         self._proc_start = time.monotonic()
 
+        import subprocess as _subprocess
+
+        # 生成子进程启动命令（frozen 下重启主程序 exe，开发下跑 gui.py --asr-worker）
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable]
+        else:
+            cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui.py")]
+        cmd += [
+            "--asr-worker", audio_path,
+            "--model", model,
+            "--language", language,
+            "--threads", "0",
+            "--json-output",
+        ]
+        if not use_vad:
+            cmd.append("--no-vad")
+        num_speakers = -1
+        if use_diarize:
+            cmd.append("--diarize")
+            if num_speakers_str != "自动":
+                try:
+                    num_speakers = int(num_speakers_str)
+                except ValueError:
+                    num_speakers = -1
+            cmd.append("--num-speakers")
+            cmd.append(str(num_speakers))
+
         def do_work():
+            # 推理放在独立子进程，避免 onnxruntime 推理在 GUI 主线程上占用 GIL 导致界面卡死。
+            # 强制子进程 stdout 为 UTF-8，避免 Windows 本地编码导致中文乱码。
+            env = dict(os.environ)
+            env["PYTHONIOENCODING"] = "utf-8"
+            kw = {
+                "stdout": _subprocess.PIPE,
+                "stderr": _subprocess.DEVNULL,
+                "text": False,
+                "env": env,
+            }
+            if sys.platform == "win32":
+                kw["creationflags"] = _subprocess.CREATE_NO_WINDOW
             try:
-                import asr as _asr
-
-                wav_path = _asr.convert_to_wav(audio_path)
-
-                num_speakers = -1
-                if use_diarize and num_speakers_str != "自动":
-                    try:
-                        num_speakers = int(num_speakers_str)
-                    except ValueError:
-                        num_speakers = -1
-
-                if use_diarize:
-                    text = _asr.transcribe_with_diarization(
-                        wav_path,
-                        model=model,
-                        language=language,
-                        num_threads=0,
-                        num_clusters=num_speakers,
-                    )
-                else:
-                    text = _asr.transcribe_file(
-                        wav_path,
-                        model=model,
-                        language=language,
-                        use_vad=not use_vad,
-                        num_threads=0,
-                    )
-                self._work_result = ("ok", text)
+                proc = _subprocess.Popen(cmd, **kw)
             except Exception as e:
-                self._work_result = ("error", str(e))
+                self._work_result = ("error", f"无法启动识别进程: {e}")
+                return
+            self._worker_proc = proc
+            try:
+                out, _ = proc.communicate(timeout=3600)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                self._work_result = ("error", "识别超时")
+                return
+            if self._cancel_requested:
+                return
+            try:
+                import json as _json
+                data = _json.loads(out.decode("utf-8"))
+            except Exception:
+                self._work_result = ("error", "无法解析识别结果")
+                return
+            if data.get("ok"):
+                self._work_result = ("ok", data.get("text", ""))
+            else:
+                self._work_result = ("error", data.get("error", "识别失败"))
 
         self._work_result = None
         self._work_thread = threading.Thread(target=do_work, daemon=True)
