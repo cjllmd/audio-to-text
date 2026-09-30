@@ -1,6 +1,4 @@
-import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -252,13 +250,9 @@ class App(_BASE_CLASS):
         self.configure(bg=_BG)
         self.resizable(False, False)
         self._set_icon()
-        self._proc = None
-        self._proc_stdout = b""
-        self._proc_stderr = b""
         self._proc_start = 0.0
-        self._proc_lock = threading.Lock()
-        self._proc_stdout_thread = None
-        self._proc_stderr_thread = None
+        self._work_thread = None
+        self._correct_thread = None
         self._is_compiled = getattr(sys, "frozen", False)
         try:
             __compiled__
@@ -623,12 +617,7 @@ class App(_BASE_CLASS):
             self._status_label.config(text="")
 
     def _cancel(self):
-        if self._proc is not None:
-            try:
-                self._proc.kill()
-            except Exception:
-                pass
-            self._proc = None
+        self._cancel_requested = True
         self._set_ui_busy(False)
         self._elapsed_label.config(text="")
         self.result_text.delete("1.0", "end")
@@ -655,126 +644,64 @@ class App(_BASE_CLASS):
         self.result_text.delete("1.0", "end")
         self.result_text.insert("end", "识别中...\n")
 
-        try:
-            _is_compiled = self._is_compiled
-        except Exception:
-            _is_compiled = False
-
-        if _is_compiled:
-            real_exe = sys.executable
-            if not os.path.exists(real_exe):
-                exe_dir = os.path.dirname(os.path.abspath(real_exe))
-                for f in os.listdir(exe_dir):
-                    p = os.path.join(exe_dir, f)
-                    if (os.path.isfile(p) and os.access(p, os.X_OK)
-                            and not f.endswith('.so') and not f.endswith('.dylib')
-                            and not f.endswith('.dll') and not f.endswith('.pyd')
-                            and f != 'python3'):
-                        real_exe = p
-                        break
-            cmd = [real_exe, "--asr-worker", audio_path,
-                   "--model", model, "--language", language,
-                   "--threads", "0", "--json-output"]
-        else:
-            asr_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr.py")
-            cmd = [sys.executable, "-u", asr_script, audio_path,
-               "--model", model, "--language", language,
-               "--threads", "0", "--json-output"]
-        if not use_vad:
-            cmd.append("--no-vad")
-        if use_diarize:
-            cmd.append("--diarize")
-            if num_speakers_str != "自动":
-                cmd.extend(["--num-speakers", num_speakers_str])
-
-        try:
-            self._proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-        except Exception as e:
-            self._set_ui_busy(False)
-            self.result_text.delete("1.0", "end")
-            self.result_text.insert("end", f"启动识别进程失败:\n{e}")
-            return
-
-        self._proc_stdout = b""
-        self._proc_stderr = b""
+        self._cancel_requested = False
         self._proc_start = time.monotonic()
 
-        self._proc_stdout_thread = threading.Thread(
-            target=self._read_pipe, args=(self._proc.stdout, True), daemon=True
-        )
-        self._proc_stderr_thread = threading.Thread(
-            target=self._read_pipe, args=(self._proc.stderr, False), daemon=True
-        )
-        self._proc_stdout_thread.start()
-        self._proc_stderr_thread.start()
-
-        self.after(80, self._poll_proc)
-
-    def _read_pipe(self, pipe, is_stdout):
-        while True:
+        def do_work():
             try:
-                chunk = os.read(pipe.fileno(), 65536)
-            except (OSError, ValueError):
-                break
-            if not chunk:
-                break
-            with self._proc_lock:
-                if is_stdout:
-                    self._proc_stdout += chunk
+                import asr as _asr
+
+                wav_path = _asr.convert_to_wav(audio_path)
+
+                num_speakers = -1
+                if use_diarize and num_speakers_str != "自动":
+                    try:
+                        num_speakers = int(num_speakers_str)
+                    except ValueError:
+                        num_speakers = -1
+
+                if use_diarize:
+                    text = _asr.transcribe_with_diarization(
+                        wav_path,
+                        model=model,
+                        language=language,
+                        num_threads=0,
+                        num_clusters=num_speakers,
+                    )
                 else:
-                    self._proc_stderr += chunk
+                    text = _asr.transcribe_file(
+                        wav_path,
+                        model=model,
+                        language=language,
+                        use_vad=not use_vad,
+                        num_threads=0,
+                    )
+                self._work_result = ("ok", text)
+            except Exception as e:
+                self._work_result = ("error", str(e))
 
-    def _poll_proc(self):
-        proc = self._proc
-        if proc is None:
-            return
+        self._work_result = None
+        self._work_thread = threading.Thread(target=do_work, daemon=True)
+        self._work_thread.start()
 
-        retcode = proc.poll()
+        self.after(80, self._poll_work)
 
-        if retcode is not None:
-            self._handle_proc_result()
-            return
-
-        elapsed = time.monotonic() - self._proc_start
-        self._elapsed_label.config(text=f"{elapsed:.1f}s")
-        if elapsed > 600:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            self._proc = None
-            self._show_error("识别超时（超过 10 分钟）")
-            return
-
-        self.after(80, self._poll_proc)
-
-    def _handle_proc_result(self):
-        self._proc = None
-
-        if self._proc_stdout_thread is not None:
-            self._proc_stdout_thread.join(timeout=2)
-            self._proc_stdout_thread = None
-        if self._proc_stderr_thread is not None:
-            self._proc_stderr_thread.join(timeout=2)
-            self._proc_stderr_thread = None
-
-        output = self._proc_stdout.decode("utf-8", errors="replace").strip()
-        if output:
-            try:
-                data = json.loads(output)
-                if data.get("ok"):
-                    self._show_result(data.get("text", ""))
-                else:
-                    self._show_error(data.get("error", "未知错误"))
-            except json.JSONDecodeError:
-                self._show_error(output[:500])
+    def _poll_work(self):
+        if self._work_result is None:
+            elapsed = time.monotonic() - self._proc_start
+            self._elapsed_label.config(text=f"{elapsed:.1f}s")
+            if elapsed > 3600:
+                self._work_result = ("error", "识别超时")
+            else:
+                self.after(80, self._poll_work)
+                return
+        self._work_thread = None
+        kind, value = self._work_result
+        self._work_result = None
+        if kind == "ok":
+            self._show_result(value or "")
         else:
-            err = self._proc_stderr.decode("utf-8", errors="replace").strip()
-            self._show_error(err or "无输出")
+            self._show_error(value or "未知错误")
 
     def _show_result(self, text):
         self._set_ui_busy(False)
@@ -784,8 +711,6 @@ class App(_BASE_CLASS):
         if text:
             if self.correct_var.get():
                 self.result_text.insert("end", text)
-                self._status_label.config(text="纠错中...", foreground=_ACCENT)
-                self._correct_proc = None
                 self._start_correction(text)
             else:
                 self.result_text.insert("end", text)
@@ -793,64 +718,33 @@ class App(_BASE_CLASS):
             self.result_text.insert("end", "(识别完成，但未检测到语音内容)")
 
     def _start_correction(self, text):
-        try:
-            _is_compiled = self._is_compiled
-        except Exception:
-            _is_compiled = False
+        self._status_label.config(text="纠错中...", foreground=_ACCENT)
 
-        if _is_compiled:
+        def do_correct():
             try:
                 from corrector import correct_text
                 corrected = correct_text(text)
-            except Exception:
+            except Exception as e:
                 corrected = text
-            self._status_label.config(text="")
-            self.result_text.delete("1.0", "end")
-            self.result_text.insert("end", corrected)
-            return
+                self._correct_error = str(e)
+            self._correct_result = corrected
 
-        try:
-            script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corrector.py")
-            self._correct_proc = subprocess.Popen(
-                [sys.executable, script, "--json-output"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            self._correct_proc.stdin.write(text.encode("utf-8"))
-            self._correct_proc.stdin.close()
-        except Exception:
-            self._status_label.config(text="")
-            return
-        self.after(200, self._poll_correction)
+        self._correct_result = None
+        self._correct_error = None
+        self._correct_thread = threading.Thread(target=do_correct, daemon=True)
+        self._correct_thread.start()
+        self.after(150, self._poll_correction)
 
     def _poll_correction(self):
-        proc = getattr(self, "_correct_proc", None)
-        if proc is None:
+        if self._correct_result is None:
+            self.after(150, self._poll_correction)
             return
-        ret = proc.poll()
-        if ret is not None:
-            try:
-                stdout = proc.communicate(timeout=5)[0]
-            except Exception:
-                stdout = b""
-            stdout = stdout.decode("utf-8", errors="replace").strip()
-            if ret == 0 and stdout:
-                try:
-                    import json as _json
-                    data = _json.loads(stdout)
-                    corrected = data.get("text", "")
-                except Exception:
-                    corrected = stdout
-            else:
-                corrected = ""
-            self._status_label.config(text="")
-            if corrected:
-                self.result_text.delete("1.0", "end")
-                self.result_text.insert("end", corrected)
-            self._correct_proc = None
-            return
-        self.after(200, self._poll_correction)
+        self._correct_thread = None
+        corrected = self._correct_result
+        self._correct_result = None
+        self._status_label.config(text="")
+        self.result_text.delete("1.0", "end")
+        self.result_text.insert("end", corrected)
 
     def _show_error(self, msg):
         self._set_ui_busy(False)

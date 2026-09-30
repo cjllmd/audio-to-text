@@ -41,6 +41,8 @@ build_mac() {
         --include-module=av \
         --follow-import-to=av \
         --include-module=corrector \
+        --include-module=asr \
+        --follow-import-to=asr \
         --include-module=tokenizers \
         --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx \
         --include-data-files=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx \
@@ -162,6 +164,8 @@ build_windows() {
         --follow-import-to=av \
         --include-module=av._cyutil \
         --include-module=corrector \
+        --include-module=asr \
+        --follow-import-to=asr \
         --include-module=tokenizers \
         --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx \
         --include-data-files=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx \
