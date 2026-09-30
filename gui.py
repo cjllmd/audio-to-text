@@ -1,8 +1,8 @@
 import json
 import os
-import select
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -256,6 +256,15 @@ class App(_BASE_CLASS):
         self._proc_stdout = b""
         self._proc_stderr = b""
         self._proc_start = 0.0
+        self._proc_lock = threading.Lock()
+        self._proc_stdout_thread = None
+        self._proc_stderr_thread = None
+        self._is_compiled = getattr(sys, "frozen", False)
+        try:
+            __compiled__
+            self._is_compiled = True
+        except NameError:
+            pass
         _Style.apply(self)
         self._build_ui()
         if _HAS_DND:
@@ -647,13 +656,11 @@ class App(_BASE_CLASS):
         self.result_text.insert("end", "识别中...\n")
 
         try:
-            _is_compiled = bool(__compiled__)
-        except NameError:
+            _is_compiled = self._is_compiled
+        except Exception:
             _is_compiled = False
 
         if _is_compiled:
-            # Nuitka 编译模式: sys.executable 可能指向不存在的 python3
-            # 需要找到真正的编译二进制
             real_exe = sys.executable
             if not os.path.exists(real_exe):
                 exe_dir = os.path.dirname(os.path.abspath(real_exe))
@@ -685,7 +692,6 @@ class App(_BASE_CLASS):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                close_fds=True,
             )
         except Exception as e:
             self._set_ui_busy(False)
@@ -696,7 +702,31 @@ class App(_BASE_CLASS):
         self._proc_stdout = b""
         self._proc_stderr = b""
         self._proc_start = time.monotonic()
-        self._poll_proc()
+
+        self._proc_stdout_thread = threading.Thread(
+            target=self._read_pipe, args=(self._proc.stdout, True), daemon=True
+        )
+        self._proc_stderr_thread = threading.Thread(
+            target=self._read_pipe, args=(self._proc.stderr, False), daemon=True
+        )
+        self._proc_stdout_thread.start()
+        self._proc_stderr_thread.start()
+
+        self.after(80, self._poll_proc)
+
+    def _read_pipe(self, pipe, is_stdout):
+        while True:
+            try:
+                chunk = os.read(pipe.fileno(), 65536)
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            with self._proc_lock:
+                if is_stdout:
+                    self._proc_stdout += chunk
+                else:
+                    self._proc_stderr += chunk
 
     def _poll_proc(self):
         proc = self._proc
@@ -704,17 +734,6 @@ class App(_BASE_CLASS):
             return
 
         retcode = proc.poll()
-
-        try:
-            readable, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0)
-            for fd in readable:
-                chunk = os.read(fd.fileno(), 65536)
-                if fd == proc.stdout:
-                    self._proc_stdout += chunk
-                else:
-                    self._proc_stderr += chunk
-        except (OSError, ValueError):
-            pass
 
         if retcode is not None:
             self._handle_proc_result()
@@ -737,10 +756,18 @@ class App(_BASE_CLASS):
         proc = self._proc
         self._proc = None
 
+        if self._proc_stdout_thread is not None:
+            self._proc_stdout_thread.join(timeout=2)
+            self._proc_stdout_thread = None
+        if self._proc_stderr_thread is not None:
+            self._proc_stderr_thread.join(timeout=2)
+            self._proc_stderr_thread = None
+
         try:
             proc_stdout, proc_stderr = proc.communicate(timeout=5)
-            self._proc_stdout += proc_stdout
-            self._proc_stderr += proc_stderr
+            with self._proc_lock:
+                self._proc_stdout += proc_stdout
+                self._proc_stderr += proc_stderr
         except Exception:
             pass
 
@@ -776,6 +803,22 @@ class App(_BASE_CLASS):
 
     def _start_correction(self, text):
         try:
+            _is_compiled = self._is_compiled
+        except Exception:
+            _is_compiled = False
+
+        if _is_compiled:
+            try:
+                from corrector import correct_text
+                corrected = correct_text(text)
+            except Exception:
+                corrected = text
+            self._status_label.config(text="")
+            self.result_text.delete("1.0", "end")
+            self.result_text.insert("end", corrected)
+            return
+
+        try:
             script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corrector.py")
             self._correct_proc = subprocess.Popen(
                 [sys.executable, script, "--json-output"],
@@ -796,7 +839,11 @@ class App(_BASE_CLASS):
             return
         ret = proc.poll()
         if ret is not None:
-            stdout = proc.stdout.read().decode("utf-8", errors="replace").strip()
+            try:
+                stdout = proc.communicate(timeout=5)[0]
+            except Exception:
+                stdout = b""
+            stdout = stdout.decode("utf-8", errors="replace").strip()
             if ret == 0 and stdout:
                 try:
                     import json as _json

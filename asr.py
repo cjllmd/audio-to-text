@@ -1,4 +1,5 @@
 import os
+import sys
 import wave
 import argparse
 import subprocess
@@ -347,6 +348,9 @@ def convert_to_wav(input_path: str) -> str:
         errors.append(f"PyAV 转换失败: {e}")
 
     try:
+        kwargs = {"capture_output": True, "check": True, "timeout": 120}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         subprocess.run(
             [
                 "ffmpeg", "-hide_banner", "-nostdin", "-threads", "0",
@@ -357,7 +361,7 @@ def convert_to_wav(input_path: str) -> str:
                 "-fflags", "+fastseek",
                 wav_path,
             ],
-            capture_output=True, check=True, timeout=120,
+            **kwargs,
         )
         return wav_path
     except FileNotFoundError:

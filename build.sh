@@ -42,7 +42,7 @@ build_mac() {
         --include-module=corrector \
         --include-module=tokenizers \
         --include-data-files=models/silero_vad.onnx=models/silero_vad.onnx \
-        --include-data-files=models/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx=models/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx \
+        --include-data-files=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx=models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx \
         --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx \
         --include-data-files=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt=models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt \
         --include-data-files=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx=models/sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx \
