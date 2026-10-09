@@ -658,9 +658,22 @@ class App(_BASE_CLASS):
 
         # 生成子进程启动命令（frozen 下重启主程序 exe，开发下跑 gui.py --asr-worker）
         if getattr(sys, "frozen", False):
-            cmd = [sys.executable]
+            python_exe = sys.executable
         else:
-            cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui.py")]
+            python_exe = sys.executable
+            if not python_exe or not os.path.isfile(python_exe):
+                import shutil
+                python_exe = shutil.which("python") or shutil.which("python3") or python_exe
+            gui_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui.py")
+            if not os.path.isfile(gui_script):
+                self._set_ui_busy(False)
+                messagebox.showerror("错误", f"找不到 GUI 脚本:\n{gui_script}")
+                return
+
+        if getattr(sys, "frozen", False):
+            cmd = [python_exe]
+        else:
+            cmd = [python_exe, gui_script]
         cmd += [
             "--asr-worker", audio_path,
             "--model", model,
@@ -696,6 +709,17 @@ class App(_BASE_CLASS):
                 kw["creationflags"] = _subprocess.CREATE_NO_WINDOW
             try:
                 proc = _subprocess.Popen(cmd, **kw)
+            except FileNotFoundError:
+                if sys.platform == "win32" and not getattr(sys, "frozen", False):
+                    try:
+                        kw.pop("creationflags", None)
+                        proc = _subprocess.Popen(cmd, **kw)
+                    except Exception as e2:
+                        self._work_result = ("error", f"无法启动识别进程: {e2}\n请确认 Python 已加入系统 PATH，或尝试从命令行启动。")
+                        return
+                else:
+                    self._work_result = ("error", f"找不到 Python 解释器:\n{cmd[0]}\n请确认 Python 安装完整且已加入系统 PATH。")
+                    return
             except Exception as e:
                 self._work_result = ("error", f"无法启动识别进程: {e}")
                 return
