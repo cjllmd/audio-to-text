@@ -658,22 +658,13 @@ class App(_BASE_CLASS):
 
         # 生成子进程启动命令（frozen 下重启主程序 exe，开发下跑 gui.py --asr-worker）
         if getattr(sys, "frozen", False):
-            python_exe = sys.executable
+            cmd = [sys.executable]
         else:
             python_exe = sys.executable
             if not python_exe or not os.path.isfile(python_exe):
                 import shutil
                 python_exe = shutil.which("python") or shutil.which("python3") or python_exe
-            gui_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui.py")
-            if not os.path.isfile(gui_script):
-                self._set_ui_busy(False)
-                messagebox.showerror("错误", f"找不到 GUI 脚本:\n{gui_script}")
-                return
-
-        if getattr(sys, "frozen", False):
-            cmd = [python_exe]
-        else:
-            cmd = [python_exe, gui_script]
+            cmd = [python_exe, os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui.py")]
         cmd += [
             "--asr-worker", audio_path,
             "--model", model,
