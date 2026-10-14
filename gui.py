@@ -252,7 +252,6 @@ class App(_BASE_CLASS):
         self._set_icon()
         self._proc_start = 0.0
         self._work_thread = None
-        self._worker_proc = None
         self._correct_thread = None
         self._is_compiled = getattr(sys, "frozen", False)
         try:
@@ -619,12 +618,6 @@ class App(_BASE_CLASS):
 
     def _cancel(self):
         self._cancel_requested = True
-        proc = self._worker_proc
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
         self._set_ui_busy(False)
         self._elapsed_label.config(text="")
         self.result_text.delete("1.0", "end")
@@ -654,113 +647,72 @@ class App(_BASE_CLASS):
         self._cancel_requested = False
         self._proc_start = time.monotonic()
 
-        import subprocess as _subprocess
-
-        # 生成子进程启动命令（frozen 下重启主程序 exe，开发下跑 gui.py --asr-worker）
-        if getattr(sys, "frozen", False):
-            cmd = [sys.executable]
-        else:
-            python_exe = sys.executable
-            if not python_exe or not os.path.isfile(python_exe):
-                import shutil
-                python_exe = shutil.which("python") or shutil.which("python3") or python_exe
-            cmd = [python_exe, os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui.py")]
-        cmd += [
-            "--asr-worker", audio_path,
+        asr_argv = [
+            "asr.py", audio_path,
             "--model", model,
             "--language", language,
             "--threads", "0",
             "--json-output",
         ]
         if not use_vad:
-            cmd.append("--no-vad")
-        num_speakers = -1
+            asr_argv.append("--no-vad")
         if use_diarize:
-            cmd.append("--diarize")
+            asr_argv.append("--diarize")
             if num_speakers_str != "自动":
                 try:
-                    num_speakers = int(num_speakers_str)
+                    ns = int(num_speakers_str)
                 except ValueError:
-                    num_speakers = -1
-            cmd.append("--num-speakers")
-            cmd.append(str(num_speakers))
+                    ns = -1
+            else:
+                ns = -1
+            asr_argv.append("--num-speakers")
+            asr_argv.append(str(ns))
 
         def do_work():
-            # 推理放在独立子进程，避免 onnxruntime 推理在 GUI 主线程上占用 GIL 导致界面卡死。
-            # 强制子进程 stdout 为 UTF-8，避免 Windows 本地编码导致中文乱码。
-            env = dict(os.environ)
-            env["PYTHONIOENCODING"] = "utf-8"
-            env["ORT_LOGGING_LEVEL"] = "3"
-            env["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
-            env["TOKENIZERS_PARALLELISM"] = "false"
-            kw = {
-                "stdout": _subprocess.PIPE,
-                "stderr": _subprocess.PIPE,
-                "text": False,
-                "env": env,
-            }
-            if sys.platform == "win32":
-                kw["creationflags"] = _subprocess.CREATE_NO_WINDOW
+            import io as _io
+            import json as _json
+
+            os.environ["ORT_LOGGING_LEVEL"] = "3"
+            os.environ["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
+
+            _real_stdout = sys.stdout
+            _buf = _io.StringIO()
+            sys.stdout = _buf
+
+            _saved_argv = sys.argv
+            sys.argv = asr_argv
+
             try:
-                proc = _subprocess.Popen(cmd, **kw)
-            except FileNotFoundError:
-                if sys.platform == "win32" and not getattr(sys, "frozen", False):
-                    try:
-                        kw.pop("creationflags", None)
-                        proc = _subprocess.Popen(cmd, **kw)
-                    except Exception as e2:
-                        self._work_result = ("error", f"无法启动识别进程: {e2}\n请确认 Python 已加入系统 PATH，或尝试从命令行启动。")
-                        return
-                else:
-                    self._work_result = ("error", f"找不到 Python 解释器:\n{cmd[0]}\n请确认 Python 安装完整且已加入系统 PATH。")
-                    return
-            except Exception as e:
-                self._work_result = ("error", f"无法启动识别进程: {e}")
-                return
-            self._worker_proc = proc
-            try:
-                out, err = proc.communicate(timeout=3600)
-            except Exception:
+                from asr import main as _asr_main
+                _asr_main()
+            except Exception as _e:
                 try:
-                    proc.kill()
+                    _buf.write(_json.dumps({"ok": False, "error": str(_e)}, ensure_ascii=False) + "\n")
                 except Exception:
                     pass
-                self._work_result = ("error", "识别超时")
-                return
+            finally:
+                sys.stdout = _real_stdout
+                sys.argv = _saved_argv
+
             if self._cancel_requested:
                 return
-            if proc.returncode != 0:
-                err_text = err.decode("utf-8", errors="replace").strip() if err else ""
-                out_text = out.decode("utf-8", errors="replace").strip() if out else ""
-                detail = err_text or out_text or f"进程退出码: {proc.returncode}"
-                self._work_result = ("error", f"识别进程异常退出:\n{detail}")
+
+            _output = _buf.getvalue()
+            data = None
+            for _line in _output.strip().split("\n"):
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    data = _json.loads(_line)
+                    break
+                except Exception:
+                    continue
+
+            if data is None:
+                self._work_result = ("error", f"无法解析识别结果:\n{_output[:500] if _output.strip() else '无输出'}")
                 return
-            try:
-                import json as _json
-                out_text = out.decode("utf-8", errors="replace")
-                data = None
-                for _line in out_text.strip().split("\n"):
-                    _line = _line.strip()
-                    if not _line:
-                        continue
-                    try:
-                        data = _json.loads(_line)
-                        break
-                    except Exception:
-                        continue
-                if data is None:
-                    data = _json.loads(out_text)
-            except Exception:
-                err_text = err.decode("utf-8", errors="replace").strip() if err else ""
-                out_text = out.decode("utf-8", errors="replace").strip() if out else ""
-                parts = []
-                if out_text:
-                    parts.append(f"输出: {out_text[:500]}")
-                if err_text:
-                    parts.append(f"错误: {err_text[:500]}")
-                detail = "\n".join(parts) if parts else "子进程无输出"
-                self._work_result = ("error", f"无法解析识别结果:\n{detail}")
-                return
+
             if data.get("ok"):
                 self._work_result = ("ok", data.get("text", ""))
             else:
@@ -848,49 +800,5 @@ class App(_BASE_CLASS):
 
 
 if __name__ == "__main__":
-    # --asr-worker 模式：被 GUI 子进程调用时运行 ASR 识别逻辑
-    if "--asr-worker" in sys.argv:
-        sys.argv.remove("--asr-worker")
-        import io as _io
-        import json as _json
-
-        _real_stdout = sys.stdout
-        _buf = _io.StringIO()
-        sys.stdout = _buf
-
-        try:
-            from asr import main as asr_main
-            asr_main()
-        except Exception as _e:
-            try:
-                _buf.write(_json.dumps({"ok": False, "error": str(_e)}, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-        finally:
-            sys.stdout = _real_stdout
-
-        _output = _buf.getvalue()
-        _json_line = ""
-        for _line in reversed(_output.split("\n")):
-            _line = _line.strip()
-            if _line:
-                try:
-                    _json.loads(_line)
-                    _json_line = _line
-                except Exception:
-                    break
-                break
-        if not _json_line:
-            for _line in _output.split("\n"):
-                _line = _line.strip()
-                if _line.startswith("{"):
-                    _json_line = _line
-                    break
-        if _json_line:
-            _real_stdout.write(_json_line + "\n")
-            _real_stdout.flush()
-
-        sys.exit(0)
-
     app = App()
     app.mainloop()
