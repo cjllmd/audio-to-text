@@ -690,6 +690,9 @@ class App(_BASE_CLASS):
             # 强制子进程 stdout 为 UTF-8，避免 Windows 本地编码导致中文乱码。
             env = dict(os.environ)
             env["PYTHONIOENCODING"] = "utf-8"
+            env["ORT_LOGGING_LEVEL"] = "3"
+            env["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
+            env["TOKENIZERS_PARALLELISM"] = "false"
             kw = {
                 "stdout": _subprocess.PIPE,
                 "stderr": _subprocess.PIPE,
@@ -734,7 +737,19 @@ class App(_BASE_CLASS):
                 return
             try:
                 import json as _json
-                data = _json.loads(out.decode("utf-8"))
+                out_text = out.decode("utf-8", errors="replace")
+                data = None
+                for _line in out_text.strip().split("\n"):
+                    _line = _line.strip()
+                    if not _line:
+                        continue
+                    try:
+                        data = _json.loads(_line)
+                        break
+                    except Exception:
+                        continue
+                if data is None:
+                    data = _json.loads(out_text)
             except Exception:
                 err_text = err.decode("utf-8", errors="replace").strip() if err else ""
                 out_text = out.decode("utf-8", errors="replace").strip() if out else ""
@@ -838,31 +853,42 @@ if __name__ == "__main__":
         sys.argv.remove("--asr-worker")
         import io as _io
         import json as _json
-        import os as _os
 
-        _stdout_save = _os.dup(1)
-        _os.dup2(2, 1)
-
-        _buf = _io.StringIO()
         _real_stdout = sys.stdout
+        _buf = _io.StringIO()
         sys.stdout = _buf
 
         try:
             from asr import main as asr_main
             asr_main()
         except Exception as _e:
-            _buf.write(_json.dumps({"ok": False, "error": str(_e)}, ensure_ascii=False) + "\n")
+            try:
+                _buf.write(_json.dumps({"ok": False, "error": str(_e)}, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
         finally:
             sys.stdout = _real_stdout
-            _os.dup2(_stdout_save, 1)
-            _os.close(_stdout_save)
 
-        _output = _buf.getvalue().strip()
-        if _output:
-            _lines = [l.strip() for l in _output.split("\n") if l.strip()]
-            _json_line = _lines[-1] if _lines else _output
-            sys.stdout.write(_json_line + "\n")
-            sys.stdout.flush()
+        _output = _buf.getvalue()
+        _json_line = ""
+        for _line in reversed(_output.split("\n")):
+            _line = _line.strip()
+            if _line:
+                try:
+                    _json.loads(_line)
+                    _json_line = _line
+                except Exception:
+                    break
+                break
+        if not _json_line:
+            for _line in _output.split("\n"):
+                _line = _line.strip()
+                if _line.startswith("{"):
+                    _json_line = _line
+                    break
+        if _json_line:
+            _real_stdout.write(_json_line + "\n")
+            _real_stdout.flush()
 
         sys.exit(0)
 
