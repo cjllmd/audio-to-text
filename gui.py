@@ -692,7 +692,7 @@ class App(_BASE_CLASS):
             env["PYTHONIOENCODING"] = "utf-8"
             kw = {
                 "stdout": _subprocess.PIPE,
-                "stderr": _subprocess.DEVNULL,
+                "stderr": _subprocess.PIPE,
                 "text": False,
                 "env": env,
             }
@@ -716,7 +716,7 @@ class App(_BASE_CLASS):
                 return
             self._worker_proc = proc
             try:
-                out, _ = proc.communicate(timeout=3600)
+                out, err = proc.communicate(timeout=3600)
             except Exception:
                 try:
                     proc.kill()
@@ -726,11 +726,25 @@ class App(_BASE_CLASS):
                 return
             if self._cancel_requested:
                 return
+            if proc.returncode != 0:
+                err_text = err.decode("utf-8", errors="replace").strip() if err else ""
+                out_text = out.decode("utf-8", errors="replace").strip() if out else ""
+                detail = err_text or out_text or f"进程退出码: {proc.returncode}"
+                self._work_result = ("error", f"识别进程异常退出:\n{detail}")
+                return
             try:
                 import json as _json
                 data = _json.loads(out.decode("utf-8"))
             except Exception:
-                self._work_result = ("error", "无法解析识别结果")
+                err_text = err.decode("utf-8", errors="replace").strip() if err else ""
+                out_text = out.decode("utf-8", errors="replace").strip() if out else ""
+                parts = []
+                if out_text:
+                    parts.append(f"输出: {out_text[:500]}")
+                if err_text:
+                    parts.append(f"错误: {err_text[:500]}")
+                detail = "\n".join(parts) if parts else "子进程无输出"
+                self._work_result = ("error", f"无法解析识别结果:\n{detail}")
                 return
             if data.get("ok"):
                 self._work_result = ("ok", data.get("text", ""))
@@ -822,8 +836,34 @@ if __name__ == "__main__":
     # --asr-worker 模式：被 GUI 子进程调用时运行 ASR 识别逻辑
     if "--asr-worker" in sys.argv:
         sys.argv.remove("--asr-worker")
-        from asr import main as asr_main
-        asr_main()
+        import io as _io
+        import json as _json
+        import os as _os
+
+        _stdout_save = _os.dup(1)
+        _os.dup2(2, 1)
+
+        _buf = _io.StringIO()
+        _real_stdout = sys.stdout
+        sys.stdout = _buf
+
+        try:
+            from asr import main as asr_main
+            asr_main()
+        except Exception as _e:
+            _buf.write(_json.dumps({"ok": False, "error": str(_e)}, ensure_ascii=False) + "\n")
+        finally:
+            sys.stdout = _real_stdout
+            _os.dup2(_stdout_save, 1)
+            _os.close(_stdout_save)
+
+        _output = _buf.getvalue().strip()
+        if _output:
+            _lines = [l.strip() for l in _output.split("\n") if l.strip()]
+            _json_line = _lines[-1] if _lines else _output
+            sys.stdout.write(_json_line + "\n")
+            sys.stdout.flush()
+
         sys.exit(0)
 
     app = App()

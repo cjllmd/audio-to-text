@@ -467,20 +467,28 @@ def main():
         return
 
     if not args.audio:
-        parser.print_help()
-        print("\n可用模型:")
-        for name, info in MODEL_INFO.items():
-            marker = " (默认)" if name == "sensevoice" else ""
-            print(f"  {name}: {info['desc']}{marker}")
-        print("\n示例:")
-        print("  python asr.py audio.wav")
-        print("  python asr.py audio.mp3 --model sensevoice")
-        print("  python asr.py audio.wav --language zh --no-vad")
-        print("  python asr.py --interactive --model sensevoice")
+        if args.json_output:
+            import json
+            print(json.dumps({"ok": False, "error": "未指定音频文件路径"}, ensure_ascii=False))
+        else:
+            parser.print_help()
+            print("\n可用模型:")
+            for name, info in MODEL_INFO.items():
+                marker = " (默认)" if name == "sensevoice" else ""
+                print(f"  {name}: {info['desc']}{marker}")
+            print("\n示例:")
+            print("  python asr.py audio.wav")
+            print("  python asr.py audio.mp3 --model sensevoice")
+            print("  python asr.py audio.wav --language zh --no-vad")
+            print("  python asr.py --interactive --model sensevoice")
         return
 
     if not os.path.exists(args.audio):
-        print(f"文件不存在: {args.audio}")
+        if args.json_output:
+            import json
+            print(json.dumps({"ok": False, "error": f"文件不存在: {args.audio}"}, ensure_ascii=False))
+        else:
+            print(f"文件不存在: {args.audio}")
         return
 
     temp_wav = None
