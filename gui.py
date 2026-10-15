@@ -45,6 +45,30 @@ _LANG_DISPLAY = list(_LANG_MAP.keys())
 _SHADOW = "#e0e3eb"
 
 
+def _asr_argv(audio_path, model, language, use_vad, use_diarize, num_speakers_str):
+    argv = [
+        "asr.py", audio_path,
+        "--model", model,
+        "--language", language,
+        "--threads", "0",
+        "--json-output",
+    ]
+    if not use_vad:
+        argv.append("--no-vad")
+    if use_diarize:
+        argv.append("--diarize")
+        if num_speakers_str != "自动":
+            try:
+                ns = int(num_speakers_str)
+            except ValueError:
+                ns = -1
+        else:
+            ns = -1
+        argv.append("--num-speakers")
+        argv.append(str(ns))
+    return argv
+
+
 class _Style:
     @staticmethod
     def apply(root):
@@ -618,10 +642,6 @@ class App(_BASE_CLASS):
 
     def _cancel(self):
         self._cancel_requested = True
-        try:
-            self._work_proc.kill()
-        except Exception:
-            pass
         self._set_ui_busy(False)
         self._elapsed_label.config(text="")
         self.result_text.delete("1.0", "end")
@@ -651,119 +671,75 @@ class App(_BASE_CLASS):
         self._cancel_requested = False
         self._proc_start = time.monotonic()
 
-        asr_argv = [
-            "asr.py", audio_path,
-            "--model", model,
-            "--language", language,
-            "--threads", "0",
-            "--json-output",
-        ]
-        if not use_vad:
-            asr_argv.append("--no-vad")
-        if use_diarize:
-            asr_argv.append("--diarize")
-            if num_speakers_str != "自动":
-                try:
-                    ns = int(num_speakers_str)
-                except ValueError:
-                    ns = -1
-            else:
-                ns = -1
-            asr_argv.append("--num-speakers")
-            asr_argv.append(str(ns))
-
-        import multiprocessing as _mp
-        if sys.platform == "win32":
-            _start_method = "spawn"
-        else:
-            _start_method = "fork"
-        try:
-            _mp.set_start_method(_start_method, force=True)
-        except RuntimeError:
-            pass
-
-        self._work_queue = _mp.Queue(maxsize=1)
-
-        def _asr_worker(q, argv):
-            import os as _os
-            import sys as _sys
-            import io as _io
-            import json as _json
-
-            _os.environ["ORT_LOGGING_LEVEL"] = "3"
-            _os.environ["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
-
-            _real_stdout = _sys.stdout
-            _buf = _io.StringIO()
-            _sys.stdout = _buf
-            _sys.argv = argv
-
-            try:
-                from asr import main as _asr_main
-                _asr_main()
-            except Exception as _e:
-                try:
-                    _buf.write(_json.dumps({"ok": False, "error": str(_e)}, ensure_ascii=False) + "\n")
-                except Exception:
-                    pass
-            finally:
-                _sys.stdout = _real_stdout
-
-            _output = _buf.getvalue()
-            data = None
-            for _line in _output.strip().split("\n"):
-                _line = _line.strip()
-                if not _line:
-                    continue
-                try:
-                    data = _json.loads(_line)
-                    break
-                except Exception:
-                    continue
-            if data is None:
-                data = {"ok": False, "error": f"无法解析识别结果:\n{_output[:300] if _output.strip() else '无输出'}"}
-            q.put(data)
-
-        self._work_proc = _mp.Process(
-            target=_asr_worker,
-            args=(self._work_queue, asr_argv),
-            daemon=True,
-        )
-        self._work_proc.start()
+        asr_argv = _asr_argv(audio_path, model, language, use_vad, use_diarize, num_speakers_str)
 
         self._work_result = None
+        self._work_thread = threading.Thread(
+            target=lambda: self._set_work_result(self._run_asr_inline(asr_argv)),
+            daemon=True,
+        )
+        self._work_thread.start()
         self.after(80, self._poll_work)
 
-    def _poll_work(self):
+    def _run_asr_inline(self, argv):
+        # 在后台线程内直接调用 asr.main()。onnxruntime 推理会释放 GIL，
+        # 因此 GUI 主线程不会长时间被占用。打包环境无子进程，最可靠。
+        import io as _io
+        import json as _json
+
+        os.environ["ORT_LOGGING_LEVEL"] = "3"
+        os.environ["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
+
+        _real_stdout = sys.stdout
+        _buf = _io.StringIO()
+        sys.stdout = _buf
+        sys.argv = argv
+
         try:
-            data = self._work_queue.get_nowait()
-        except Exception:
+            from asr import main as _asr_main
+            _asr_main()
+        except Exception as _e:
+            try:
+                _buf.write(_json.dumps({"ok": False, "error": str(_e)}, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        finally:
+            sys.stdout = _real_stdout
+
+        _output = _buf.getvalue()
+        data = None
+        for _line in _output.strip().split("\n"):
+            _line = _line.strip()
+            if not _line:
+                continue
+            try:
+                data = _json.loads(_line)
+                break
+            except Exception:
+                continue
+        if data is None:
+            data = {"ok": False, "error": f"无法解析识别结果:\n{_output[:300] if _output.strip() else '无输出'}"}
+        return data
+
+    def _set_work_result(self, data):
+        self._work_result = data
+
+    def _poll_work(self):
+        if self._work_result is None:
             elapsed = time.monotonic() - self._proc_start
             self._elapsed_label.config(text=f"{elapsed:.1f}s")
             if elapsed > 3600:
-                try:
-                    self._work_proc.kill()
-                except Exception:
-                    pass
-                self._work_result = ("error", "识别超时")
+                self._work_result = {"ok": False, "error": "识别超时"}
             else:
                 self.after(80, self._poll_work)
                 return
-        else:
-            if data.get("ok"):
-                self._work_result = ("ok", data.get("text", ""))
-            else:
-                self._work_result = ("error", data.get("error", "识别失败"))
-        try:
-            self._work_queue.close()
-        except Exception:
-            pass
-        kind, value = self._work_result
+        self._work_thread = None
+        data = self._work_result
         self._work_result = None
-        if kind == "ok":
-            self._show_result(value or "")
+        if data.get("ok"):
+            self._show_result(data.get("text", ""))
         else:
-            self._show_error(value or "未知错误")
+            self._show_error(data.get("error", "识别失败"))
 
     def _show_result(self, text):
         self._set_ui_busy(False)
@@ -824,7 +800,5 @@ class App(_BASE_CLASS):
 
 
 if __name__ == "__main__":
-    import multiprocessing
-    multiprocessing.freeze_support()
     app = App()
     app.mainloop()
