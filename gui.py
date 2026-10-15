@@ -674,23 +674,13 @@ class App(_BASE_CLASS):
 
         import multiprocessing as _mp
         if sys.platform == "win32":
-            try:
-                _mp.set_start_method("spawn", force=True)
-            except RuntimeError:
-                pass
-            self._start_asr_subprocess(asr_argv)
+            _start_method = "spawn"
         else:
-            try:
-                _mp.set_start_method("fork", force=True)
-            except RuntimeError:
-                pass
-            self._start_asr_multiprocess(asr_argv)
-
-        self._work_result = None
-        self.after(80, self._poll_work)
-
-    def _start_asr_multiprocess(self, asr_argv):
-        import multiprocessing as _mp
+            _start_method = "fork"
+        try:
+            _mp.set_start_method(_start_method, force=True)
+        except RuntimeError:
+            pass
 
         self._work_queue = _mp.Queue(maxsize=1)
 
@@ -740,115 +730,34 @@ class App(_BASE_CLASS):
             daemon=True,
         )
         self._work_proc.start()
-        self._poll_mode = "mp"
 
-    def _start_asr_subprocess(self, asr_argv):
-        import subprocess as _subprocess
-
-        env = dict(os.environ)
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["ORT_LOGGING_LEVEL"] = "3"
-        env["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
-        env["TOKENIZERS_PARALLELISM"] = "false"
-
-        if getattr(sys, "frozen", False):
-            cmd = [sys.executable]
-        else:
-            cmd = [sys.executable, "-u"]
-            cmd.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr.py"))
-            cmd.extend(asr_argv[1:])
-
-        kw = {
-            "stdout": _subprocess.PIPE,
-            "stderr": _subprocess.PIPE,
-            "text": False,
-            "env": env,
-        }
-        if sys.platform == "win32":
-            kw["creationflags"] = _subprocess.CREATE_NO_WINDOW
-
-        try:
-            self._work_proc = _subprocess.Popen(cmd, **kw)
-        except FileNotFoundError:
-            kw.pop("creationflags", None)
-            try:
-                self._work_proc = _subprocess.Popen(cmd, **kw)
-            except Exception as e2:
-                self._work_result = ("error", f"无法启动识别进程: {e2}")
-                return
-        except Exception as e:
-            self._work_result = ("error", f"无法启动识别进程: {e}")
-            return
-        self._poll_mode = "sp"
+        self._work_result = None
+        self.after(80, self._poll_work)
 
     def _poll_work(self):
-        if self._poll_mode == "mp":
-            try:
-                data = self._work_queue.get_nowait()
-            except Exception:
-                elapsed = time.monotonic() - self._proc_start
-                self._elapsed_label.config(text=f"{elapsed:.1f}s")
-                if elapsed > 3600:
-                    try:
-                        self._work_proc.kill()
-                    except Exception:
-                        pass
-                    self._work_result = ("error", "识别超时")
-                else:
-                    self.after(80, self._poll_work)
-                    return
-            else:
-                if data.get("ok"):
-                    self._work_result = ("ok", data.get("text", ""))
-                else:
-                    self._work_result = ("error", data.get("error", "识别失败"))
-            try:
-                self._work_queue.close()
-            except Exception:
-                pass
-        else:
-            proc = self._work_proc
-            if proc.poll() is None:
-                elapsed = time.monotonic() - self._proc_start
-                self._elapsed_label.config(text=f"{elapsed:.1f}s")
-                if elapsed > 3600:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    self._work_result = ("error", "识别超时")
-                else:
-                    self.after(80, self._poll_work)
-                    return
-            out, err = proc.communicate(timeout=5)
-            if proc.returncode != 0:
-                err_text = err.decode("utf-8", errors="replace").strip() if err else ""
-                out_text = out.decode("utf-8", errors="replace").strip() if out else ""
-                detail = err_text or out_text or f"进程退出码: {proc.returncode}"
-                self._work_result = ("error", f"识别进程异常退出:\n{detail}")
-            else:
+        try:
+            data = self._work_queue.get_nowait()
+        except Exception:
+            elapsed = time.monotonic() - self._proc_start
+            self._elapsed_label.config(text=f"{elapsed:.1f}s")
+            if elapsed > 3600:
                 try:
-                    import json as _json
-                    out_text = out.decode("utf-8", errors="replace")
-                    data = None
-                    for _line in out_text.strip().split("\n"):
-                        _line = _line.strip()
-                        if not _line:
-                            continue
-                        try:
-                            data = _json.loads(_line)
-                            break
-                        except Exception:
-                            continue
-                    if data is None:
-                        self._work_result = ("error", f"无法解析识别结果:\n{out_text[:300]}")
-                    elif data.get("ok"):
-                        self._work_result = ("ok", data.get("text", ""))
-                    else:
-                        self._work_result = ("error", data.get("error", "识别失败"))
-                except Exception as _e:
-                    self._work_result = ("error", f"解析结果失败: {_e}")
-
+                    self._work_proc.kill()
+                except Exception:
+                    pass
+                self._work_result = ("error", "识别超时")
+            else:
+                self.after(80, self._poll_work)
+                return
+        else:
+            if data.get("ok"):
+                self._work_result = ("ok", data.get("text", ""))
+            else:
+                self._work_result = ("error", data.get("error", "识别失败"))
+        try:
+            self._work_queue.close()
+        except Exception:
+            pass
         kind, value = self._work_result
         self._work_result = None
         if kind == "ok":
