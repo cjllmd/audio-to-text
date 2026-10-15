@@ -618,6 +618,10 @@ class App(_BASE_CLASS):
 
     def _cancel(self):
         self._cancel_requested = True
+        try:
+            self._work_proc.kill()
+        except Exception:
+            pass
         self._set_ui_busy(False)
         self._elapsed_label.config(text="")
         self.result_text.delete("1.0", "end")
@@ -668,19 +672,41 @@ class App(_BASE_CLASS):
             asr_argv.append("--num-speakers")
             asr_argv.append(str(ns))
 
-        def do_work():
+        import multiprocessing as _mp
+        if sys.platform == "win32":
+            try:
+                _mp.set_start_method("spawn", force=True)
+            except RuntimeError:
+                pass
+            self._start_asr_subprocess(asr_argv)
+        else:
+            try:
+                _mp.set_start_method("fork", force=True)
+            except RuntimeError:
+                pass
+            self._start_asr_multiprocess(asr_argv)
+
+        self._work_result = None
+        self.after(80, self._poll_work)
+
+    def _start_asr_multiprocess(self, asr_argv):
+        import multiprocessing as _mp
+
+        self._work_queue = _mp.Queue(maxsize=1)
+
+        def _asr_worker(q, argv):
+            import os as _os
+            import sys as _sys
             import io as _io
             import json as _json
 
-            os.environ["ORT_LOGGING_LEVEL"] = "3"
-            os.environ["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
+            _os.environ["ORT_LOGGING_LEVEL"] = "3"
+            _os.environ["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
 
-            _real_stdout = sys.stdout
+            _real_stdout = _sys.stdout
             _buf = _io.StringIO()
-            sys.stdout = _buf
-
-            _saved_argv = sys.argv
-            sys.argv = asr_argv
+            _sys.stdout = _buf
+            _sys.argv = argv
 
             try:
                 from asr import main as _asr_main
@@ -691,11 +717,7 @@ class App(_BASE_CLASS):
                 except Exception:
                     pass
             finally:
-                sys.stdout = _real_stdout
-                sys.argv = _saved_argv
-
-            if self._cancel_requested:
-                return
+                _sys.stdout = _real_stdout
 
             _output = _buf.getvalue()
             data = None
@@ -708,32 +730,125 @@ class App(_BASE_CLASS):
                     break
                 except Exception:
                     continue
-
             if data is None:
-                self._work_result = ("error", f"无法解析识别结果:\n{_output[:500] if _output.strip() else '无输出'}")
+                data = {"ok": False, "error": f"无法解析识别结果:\n{_output[:300] if _output.strip() else '无输出'}"}
+            q.put(data)
+
+        self._work_proc = _mp.Process(
+            target=_asr_worker,
+            args=(self._work_queue, asr_argv),
+            daemon=True,
+        )
+        self._work_proc.start()
+        self._poll_mode = "mp"
+
+    def _start_asr_subprocess(self, asr_argv):
+        import subprocess as _subprocess
+
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["ORT_LOGGING_LEVEL"] = "3"
+        env["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
+        env["TOKENIZERS_PARALLELISM"] = "false"
+
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable]
+        else:
+            cmd = [sys.executable, "-u"]
+            cmd.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr.py"))
+            cmd.extend(asr_argv[1:])
+
+        kw = {
+            "stdout": _subprocess.PIPE,
+            "stderr": _subprocess.PIPE,
+            "text": False,
+            "env": env,
+        }
+        if sys.platform == "win32":
+            kw["creationflags"] = _subprocess.CREATE_NO_WINDOW
+
+        try:
+            self._work_proc = _subprocess.Popen(cmd, **kw)
+        except FileNotFoundError:
+            kw.pop("creationflags", None)
+            try:
+                self._work_proc = _subprocess.Popen(cmd, **kw)
+            except Exception as e2:
+                self._work_result = ("error", f"无法启动识别进程: {e2}")
                 return
-
-            if data.get("ok"):
-                self._work_result = ("ok", data.get("text", ""))
-            else:
-                self._work_result = ("error", data.get("error", "识别失败"))
-
-        self._work_result = None
-        self._work_thread = threading.Thread(target=do_work, daemon=True)
-        self._work_thread.start()
-
-        self.after(80, self._poll_work)
+        except Exception as e:
+            self._work_result = ("error", f"无法启动识别进程: {e}")
+            return
+        self._poll_mode = "sp"
 
     def _poll_work(self):
-        if self._work_result is None:
-            elapsed = time.monotonic() - self._proc_start
-            self._elapsed_label.config(text=f"{elapsed:.1f}s")
-            if elapsed > 3600:
-                self._work_result = ("error", "识别超时")
+        if self._poll_mode == "mp":
+            try:
+                data = self._work_queue.get_nowait()
+            except Exception:
+                elapsed = time.monotonic() - self._proc_start
+                self._elapsed_label.config(text=f"{elapsed:.1f}s")
+                if elapsed > 3600:
+                    try:
+                        self._work_proc.kill()
+                    except Exception:
+                        pass
+                    self._work_result = ("error", "识别超时")
+                else:
+                    self.after(80, self._poll_work)
+                    return
             else:
-                self.after(80, self._poll_work)
-                return
-        self._work_thread = None
+                if data.get("ok"):
+                    self._work_result = ("ok", data.get("text", ""))
+                else:
+                    self._work_result = ("error", data.get("error", "识别失败"))
+            try:
+                self._work_queue.close()
+            except Exception:
+                pass
+        else:
+            proc = self._work_proc
+            if proc.poll() is None:
+                elapsed = time.monotonic() - self._proc_start
+                self._elapsed_label.config(text=f"{elapsed:.1f}s")
+                if elapsed > 3600:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    self._work_result = ("error", "识别超时")
+                else:
+                    self.after(80, self._poll_work)
+                    return
+            out, err = proc.communicate(timeout=5)
+            if proc.returncode != 0:
+                err_text = err.decode("utf-8", errors="replace").strip() if err else ""
+                out_text = out.decode("utf-8", errors="replace").strip() if out else ""
+                detail = err_text or out_text or f"进程退出码: {proc.returncode}"
+                self._work_result = ("error", f"识别进程异常退出:\n{detail}")
+            else:
+                try:
+                    import json as _json
+                    out_text = out.decode("utf-8", errors="replace")
+                    data = None
+                    for _line in out_text.strip().split("\n"):
+                        _line = _line.strip()
+                        if not _line:
+                            continue
+                        try:
+                            data = _json.loads(_line)
+                            break
+                        except Exception:
+                            continue
+                    if data is None:
+                        self._work_result = ("error", f"无法解析识别结果:\n{out_text[:300]}")
+                    elif data.get("ok"):
+                        self._work_result = ("ok", data.get("text", ""))
+                    else:
+                        self._work_result = ("error", data.get("error", "识别失败"))
+                except Exception as _e:
+                    self._work_result = ("error", f"解析结果失败: {_e}")
+
         kind, value = self._work_result
         self._work_result = None
         if kind == "ok":
@@ -800,5 +915,7 @@ class App(_BASE_CLASS):
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     app = App()
     app.mainloop()
