@@ -45,6 +45,49 @@ _LANG_DISPLAY = list(_LANG_MAP.keys())
 _SHADOW = "#e0e3eb"
 
 
+def _asr_worker(q, argv):
+    # 必须在模块顶层：Windows spawn 会重新执行入口并序列化该函数，闭包会失败
+    import io as _io
+    import json as _json
+
+    os.environ["ORT_LOGGING_LEVEL"] = "3"
+    os.environ["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
+
+    _real_stdout = sys.stdout
+    _buf = _io.StringIO()
+    sys.stdout = _buf
+    sys.argv = argv
+
+    try:
+        from asr import main as _asr_main
+        _asr_main()
+    except Exception as _e:
+        try:
+            _buf.write(_json.dumps({"ok": False, "error": str(_e)}, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+    finally:
+        sys.stdout = _real_stdout
+
+    _output = _buf.getvalue()
+    data = None
+    for _line in _output.strip().split("\n"):
+        _line = _line.strip()
+        if not _line:
+            continue
+        try:
+            data = _json.loads(_line)
+            break
+        except Exception:
+            continue
+    if data is None:
+        data = {"ok": False, "error": f"无法解析识别结果:\n{_output[:300] if _output.strip() else '无输出'}"}
+    try:
+        q.put(data)
+    except Exception:
+        pass
+
+
 def _asr_argv(audio_path, model, language, use_vad, use_diarize, num_speakers_str):
     argv = [
         "asr.py", audio_path,
@@ -642,6 +685,12 @@ class App(_BASE_CLASS):
 
     def _cancel(self):
         self._cancel_requested = True
+        try:
+            proc = getattr(self, "_work_proc", None)
+            if proc is not None and proc.is_alive():
+                proc.terminate()
+        except Exception:
+            pass
         self._set_ui_busy(False)
         self._elapsed_label.config(text="")
         self.result_text.delete("1.0", "end")
@@ -673,69 +722,43 @@ class App(_BASE_CLASS):
 
         asr_argv = _asr_argv(audio_path, model, language, use_vad, use_diarize, num_speakers_str)
 
-        self._work_result = None
-        self._work_thread = threading.Thread(
-            target=lambda: self._set_work_result(self._run_asr_inline(asr_argv)),
+        import multiprocessing as _mp
+        try:
+            # Windows 只能用 spawn（无 fork）；spawn 需要模块级可导入的 target
+            _mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            pass
+
+        self._work_queue = _mp.Queue(maxsize=1)
+        self._work_proc = _mp.Process(
+            target=_asr_worker,
+            args=(self._work_queue, asr_argv),
             daemon=True,
         )
-        self._work_thread.start()
+        self._work_proc.start()
+
+        self._work_result = None
         self.after(80, self._poll_work)
 
-    def _run_asr_inline(self, argv):
-        # 在后台线程内直接调用 asr.main()。onnxruntime 推理会释放 GIL，
-        # 因此 GUI 主线程不会长时间被占用。打包环境无子进程，最可靠。
-        import io as _io
-        import json as _json
-
-        os.environ["ORT_LOGGING_LEVEL"] = "3"
-        os.environ["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
-
-        _real_stdout = sys.stdout
-        _buf = _io.StringIO()
-        sys.stdout = _buf
-        sys.argv = argv
-
-        try:
-            from asr import main as _asr_main
-            _asr_main()
-        except Exception as _e:
-            try:
-                _buf.write(_json.dumps({"ok": False, "error": str(_e)}, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-        finally:
-            sys.stdout = _real_stdout
-
-        _output = _buf.getvalue()
-        data = None
-        for _line in _output.strip().split("\n"):
-            _line = _line.strip()
-            if not _line:
-                continue
-            try:
-                data = _json.loads(_line)
-                break
-            except Exception:
-                continue
-        if data is None:
-            data = {"ok": False, "error": f"无法解析识别结果:\n{_output[:300] if _output.strip() else '无输出'}"}
-        return data
-
-    def _set_work_result(self, data):
-        self._work_result = data
-
     def _poll_work(self):
-        if self._work_result is None:
+        try:
+            data = self._work_queue.get_nowait()
+        except Exception:
             elapsed = time.monotonic() - self._proc_start
             self._elapsed_label.config(text=f"{elapsed:.1f}s")
             if elapsed > 3600:
+                try:
+                    self._work_proc.kill()
+                except Exception:
+                    pass
                 self._work_result = {"ok": False, "error": "识别超时"}
             else:
                 self.after(80, self._poll_work)
                 return
-        self._work_thread = None
-        data = self._work_result
-        self._work_result = None
+        try:
+            self._work_queue.close()
+        except Exception:
+            pass
         if data.get("ok"):
             self._show_result(data.get("text", ""))
         else:
@@ -800,5 +823,8 @@ class App(_BASE_CLASS):
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    # 打包后 spawn 子进程需要一次性初始化，必须在主入口首行调用
+    multiprocessing.freeze_support()
     app = App()
     app.mainloop()
