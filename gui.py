@@ -333,15 +333,33 @@ class App(_BASE_CLASS):
         self._center_window()
 
     def _build_menu(self):
-        menubar = tk.Menu(self, bg=_CARD, fg=_TEXT, activebackground=_ACCENT, activeforeground="#fff",
-                          font=("PingFang SC", 10))
-        help_menu = tk.Menu(menubar, tearoff=0, bg=_CARD, fg=_TEXT,
-                            activebackground=_ACCENT, activeforeground="#fff",
-                            font=("PingFang SC", 10))
+        # 跨平台字体：macOS 用苹方，Windows 用微软雅黑，其他交给系统
+        if sys.platform == "darwin":
+            _menu_font = ("PingFang SC", 12)
+        elif sys.platform == "win32":
+            _menu_font = ("Microsoft YaHei UI", 9)
+        else:
+            _menu_font = ("TkDefaultFont", 10)
+
+        menubar = tk.Menu(self)
+        if sys.platform == "win32":
+            menubar.configure(bg="#ffffff", fg=_TEXT,
+                              activebackground=_ACCENT_LIGHT, activeforeground=_ACCENT,
+                              bd=0, relief="flat", font=_menu_font)
+        help_menu = tk.Menu(menubar, tearoff=0)
+        if sys.platform == "win32":
+            help_menu.configure(bg="#ffffff", fg=_TEXT,
+                                activebackground=_ACCENT_LIGHT, activeforeground=_ACCENT,
+                                bd=1, relief="solid", font=_menu_font,
+                                selectcolor=_ACCENT)
+        else:
+            help_menu.configure(bg=_CARD, fg=_TEXT,
+                                activebackground=_ACCENT, activeforeground="#fff",
+                                font=_menu_font)
+        menubar.add_cascade(label="帮助", menu=help_menu)
         help_menu.add_command(label="注册授权...", command=self._show_license)
         help_menu.add_separator()
-        help_menu.add_command(label="关于", command=self._show_about)
-        menubar.add_cascade(label="帮助", menu=help_menu)
+        help_menu.add_command(label="帮助文档", command=self._show_about)
         self.config(menu=menubar)
 
     def _set_icon(self):
